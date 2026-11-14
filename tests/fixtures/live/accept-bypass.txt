@@ -1,0 +1,10 @@
+ Do you accept?
+ ⚠ --dangerously-skip-permissions bypasses all permission checks. Only use it
+ in a sandboxed environment with no sensitive data.
+
+ https://code.claude.com/docs/en/security
+
+ ❯ No, exit
+   Yes, I accept
+
+ Enter to confirm · Esc to cancel

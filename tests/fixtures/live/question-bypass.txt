@@ -1,0 +1,24 @@
+│                                       │ Added numeric keypad support for se… │
+│   glm-5.3-flash · API Usage Billing   │ /release-notes for more              │
+│         /private/tmp/permtest         │                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ Use the AskUserQuestion tool right now to ask me: 测试提问是否渲染. Provide
+  options: 甲方案, 乙方案, 丙方案. Then wait for my answer.
+────────────────────────────────────────────────────────────────────────────────
+ ☐ 渲染测试
+
+测试提问是否渲染?
+
+❯ 1. 甲方案
+     第一个选项
+  2. 乙方案
+     第二个选项
+  3. 丙方案
+     第三个选项
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+

@@ -1,0 +1,11 @@
+❯ Use the AskUserQuestion tool right now to ask me: 测试提问是否渲染. Provide
+  options: 甲方案, 乙方案, 丙方案. Then wait for my answer.
+⏺ User answered Claude's questions:
+  ⎿  · 测试提问是否渲染? → 乙方案
+⏺ 提问渲染正常。你选择了「乙方案」。需要我接下来做什么？
+✻ Sautéed for 9s
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  [glm-5.3-flash] ░░░░░░░░░░  9%                               ● high · /effort
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

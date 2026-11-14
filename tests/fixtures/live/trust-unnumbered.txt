@@ -1,0 +1,14 @@
+ Claude Code'll be able to read, edit, and execute files here.
+ ⚠ This folder pre-approves 25 tool permissions in .claude/settings.local.json:
+   WebSearch, Bash(awk '/^# 第二部分/,/^# 第三部分/'
+ "/Users/jimmy/project/bbdown/…, Bash(awk '/^## 使用方式/,/^# 第三部分/'
+ "/Users/jimmy/project/bbdown…, Bash(awk '{print length\($0\),
+ substr\($0,1,40\)}'), Bash(awk '/\\*\\*英文版\\*\\*/{getline; print
+ length\($0\)}' "参…, Bash(awk -F'：' '{print length\($2\)}'), Bash(awk -F'：'
+ '{split\($1,a,":"\); n=a[1]; print length\($2…, Bash(awk -F'：'
+ '{n=split\($2,w," "\); print NF" words"}'), and 17 more
+ These will apply without asking. Only proceed if you trust this configuration.
+ Security guide
+ ❯ No, exit
+   Yes, I trust this folder
+ Enter to confirm · Esc to cancel
