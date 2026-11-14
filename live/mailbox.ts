@@ -2,14 +2,16 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { homedir } from "node:os";
+import { HOME } from "../host/home.ts";
 
-export const RUNS_ROOT = path.join(homedir(), ".agent-autoloop", "worker", "runs");
+export const RUNS_ROOT = path.join(HOME, "worker", "runs");
 
 export type LiveState = {
   name: string;
   runDir: string;
   session: string;
+  /** kernel 轮次（bridge 起的）：终态语义交给 worker，DONE 不再桌面通知。 */
+  kernel?: boolean;
   state: "launching" | "working" | "question" | "suspect" | "nudged" | "stuck" | "done" | "dead" | "stopped";
   startedAt: string;
   stateSince: string;
@@ -67,6 +69,25 @@ export const CONTRACT = (mailbox: string) => `【live 会话契约】
 `;
 
 export const NUDGE = (mailbox: string) => `【哨兵催单】画面长时间没有动静。如果你已完成全部工作：写 ${mailbox}/receipt.md 并 touch ${mailbox}/DONE（两步都要）。如果卡住了：用 AskUserQuestion 说明困难提问。如果还在正常工作：继续，忽略本条。`;
+
+/** kernel 轮次的契约：receipt.md 是"最后一条消息"全文（首行结论 + 末尾回执块），readMessage 原样解析。
+ * 提问走 kernel 的回合制（ask 回执→卡片→新轮次），不要用 AskUserQuestion 停在屏幕上等——那是独立 live 模式的语义。 */
+export const KERNEL_CONTRACT = (mailbox: string) => `【live 会话契约】
+1. 要问人就按上面"怎么结束这一轮"的规范把问题写进回执 ask，然后收尾结束这一轮；不要用 AskUserQuestion 停在屏幕上等待（没有人在看屏幕）。
+2. 完成全部工作后，两个动作缺一不可：
+   a. 把你的"最后一条消息"全文写入 ${mailbox}/receipt.md——第一行是结论（按上面"怎么结束这一轮"的规范），末尾附 agent-autoloop 回执代码块（格式按上面的说明）；
+   b. 然后 touch ${mailbox}/DONE 创建空文件。
+3. 上述路径在你机器上原样可用（同路径挂载）。回执用中文。
+
+以下是任务正文：
+`;
+
+/** kernel 的 entry 目录跨轮次复用：开新轮前清掉上一轮的终态与信箱残留。 */
+export function cleanForTurn(runDir: string) {
+  for (const file of ["DONE", "receipt.md", "answer.txt", "answer-paste.txt", "question.json", "STOP"]) {
+    rmSync(path.join(mailboxOf(runDir), file), { force: true });
+  }
+}
 
 export function taskPrompt(runDir: string, promptFile: string): string {
   return CONTRACT(mailboxOf(runDir)) + readFileSync(promptFile, "utf8");

@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  glm-5.3-flash · API Usage Billing
+ ▝▝   ▝▝   /Users/jimmy/project/bbdown
+
+⚠ Model "glm-5.3-flash" isn't recognized · context assumed to be 1m tokens ·
+  update Claude Code, or see https://code.claude.com/docs/en/model-config
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Try "fix lint errors"
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

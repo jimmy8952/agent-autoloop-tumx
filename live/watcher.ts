@@ -22,9 +22,25 @@ async function pasteAndSubmit(name: string, file: string, config: LiveConfig) {
   throw new Error("提交失败：消息始终留在输入框，Enter 发了 4 次都没走");
 }
 
-/** 起 tmux 会话后的就绪等待：处理信任弹窗，等裸输入框稳定出现，然后注入任务。 */
+/** 人路径第一站：等交互 shell 提示符稳定，再像人一样敲入 claude 命令（环境由 .bashrc 全套产出）。 */
+async function shellThenClaude(name: string, config: LiveConfig) {
+  const deadline = Date.now() + 60_000;
+  let ready = 0;
+  while (Date.now() < deadline) {
+    if (patterns.shellPrompt(session.capture(name))) ready++;
+    else ready = 0;
+    if (ready >= config.stablePolls) break;
+    await sleep(1000);
+  }
+  if (ready < config.stablePolls) throw new Error("60 秒内 shell 提示符没出现（看 live.log）");
+  session.sendLiteral(name, config.claudeCommand);
+  session.sendKeys(name, ["Enter"]);
+}
+
+/** 起 tmux 会话后的就绪等待：人路径先过 shell 提示符再敲 claude；然后处理信任弹窗，等裸输入框稳定出现，注入任务。 */
 export async function launch(runDir: string, config: LiveConfig) {
-  const name = mb.sessionName(mb.readState(runDir)!.name);
+  const name = mb.readState(runDir)!.session;
+  if (config.claudeCommand) await shellThenClaude(name, config);
   const deadline = Date.now() + 180_000;
   let ready = 0;
   while (Date.now() < deadline) {
@@ -46,7 +62,7 @@ export async function launch(runDir: string, config: LiveConfig) {
     if (ready >= config.stablePolls) break;
     await sleep(1000);
   }
-  if (ready < config.stablePolls) throw new Error("120 秒内 TUI 没就绪（看 live.log）");
+  if (ready < config.stablePolls) throw new Error("180 秒内 TUI 没就绪（看 live.log）");
   await pasteAndSubmit(name, path.join(mb.mailboxOf(runDir), "task.md"), config);
 }
 
@@ -102,7 +118,9 @@ export async function watch(runDir: string, config: LiveConfig) {
       const receipt = mb.readReceipt(runDir).trim();
       state.question = undefined;
       setState("done", receipt ? "收割回执" : "DONE 存在但没有 receipt.md");
-      notify(`live ${state.name} 完成`, receipt.slice(0, 120).replace(/\n/g, " ") || "DONE 存在但 receipt.md 为空");
+      // kernel 轮次的终态交给 worker 的 Result（卡片/记录），桌面通知反而误导"已完成"。
+      if (!config.kernel)
+        notify(`live ${state.name} 完成`, receipt.slice(0, 120).replace(/\n/g, " ") || "DONE 存在但 receipt.md 为空");
       if (config.killOnDone) session.killSession(name);
       return;
     }

@@ -6,13 +6,15 @@ import { readConfig, sessionCommand, type LiveConfig } from "./config.ts";
 import * as mb from "./mailbox.ts";
 import * as session from "./session.ts";
 import { launch, watch } from "./watcher.ts";
+import { supervise } from "./supervise.ts";
 
-const USAGE = `live-sentinel：tmux live 会话的哨兵（P1，独立于 kernel）
+const USAGE = `live-sentinel：tmux live 会话的哨兵
 
   live-sentinel start <名字> --prompt-file <任务文件> [--agent glm-01] [--cwd <容器内目录>] [--command <整条命令>]
   live-sentinel status [名字]
-  live-sentinel answer <名字> <序号或文本>
-  live-sentinel stop <名字> [--kill]
+  live-sentinel answer <名字> <序号或文本>      # 或：answer --run <run目录> <序号或文本>（kernel 轮次）
+  live-sentinel stop <名字> [--kill]            # 或：stop --run <run目录> [--kill]
+  live-sentinel supervise <名字或run目录> [--dry-run] [--once]   # 监工 AI：答题/升级/降级找人
   live-sentinel watch --run <run目录>（内部用，start 会自己拉起）`;
 
 function fail(message: string): never {
@@ -88,14 +90,31 @@ async function watchRun(args: string[]) {
   await watch(flags.run, config);
 }
 
+async function superviseRun(args: string[]) {
+  const { positional, flags } = parseFlags(args.filter((word) => word !== "--dry-run" && word !== "--once"));
+  const target = positional[0] ?? fail(USAGE);
+  const runDir = existsSync(target) ? target : runDirOf(target);
+  const config = readConfig({});
+  // --program/--model 只为调试与测试换大脑；正式用法写进 live-config.json 的 supervisor。
+  if (flags.program || flags.model)
+    config.supervisor = { ...config.supervisor, ...(flags.program && { program: flags.program }), ...(flags.model && { model: flags.model }) };
+  await supervise(runDir, config, args.includes("--dry-run"), args.includes("--once"));
+}
+
 function status(name?: string) {
   if (!existsSync(mb.RUNS_ROOT)) return console.log("还没有任何 live 轮次。");
-  const dirs = readdirSync(mb.RUNS_ROOT).filter((dir) => dir.startsWith("live-"));
-  const shown = dirs
-    .map((dir) => path.join(mb.RUNS_ROOT, dir))
-    .filter((dir) => !name || dir.endsWith(`-${name}`))
-    .map((dir) => mb.readState(dir))
+  // kernel 轮次的 entry 目录不叫 live-*：认 state.json 就够（bridge 落盘带 kernel 标记）。
+  const shown = readdirSync(mb.RUNS_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      try {
+        return mb.readState(path.join(mb.RUNS_ROOT, entry.name));
+      } catch {
+        return null;
+      }
+    })
     .filter((state): state is mb.LiveState => state !== null)
+    .filter((state) => !name || state.name === name || state.runDir.endsWith(`-${name}`))
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   if (!shown.length) return console.log(name ? `没找到 live 轮次：${name}` : "还没有任何 live 轮次。");
   for (const state of shown) {
@@ -108,18 +127,30 @@ function status(name?: string) {
   }
 }
 
-function answer(name: string, words: string[]) {
-  const runDir = runDirOf(name);
+function answer(args: string[]) {
+  const { positional, flags } = parseFlags(args);
+  if (!positional.length) fail(USAGE);
+  // --run 时全部位置参数都是答案；按名字时第一个位置参数是名字，其余才是答案。
+  const words = flags.run ? positional : positional.slice(1);
+  if (!words.length) fail(USAGE);
+  const runDir = flags.run && existsSync(flags.run) ? flags.run : runDirOf(positional[0]);
   const state = mb.readState(runDir);
   if (state?.state !== "question") fail(`当前状态是 ${state?.state ?? "未知"}，不在等回答；回答不会被消费`);
   writeFileSync(path.join(runDir, "mailbox", "answer.txt"), words.join(" "));
   console.log("已写入 answer.txt，watcher 会在画面稳定后代答。");
 }
 
-function stop(name: string, kill: boolean) {
-  const runDir = runDirOf(name);
+function stop(args: string[]) {
+  const kill = args.includes("--kill");
+  const runFlag = args.indexOf("--run");
+  const runDir =
+    runFlag >= 0 && args[runFlag + 1]
+      ? args[runFlag + 1]
+      : runDirOf(args.find((word) => !word.startsWith("--")) ?? fail(USAGE));
+  if (!existsSync(runDir)) fail(`run 目录不存在：${runDir}`);
   writeFileSync(path.join(runDir, "mailbox", "STOP"), "");
-  if (kill) session.killSession(mb.sessionName(name));
+  const state = mb.readState(runDir);
+  if (kill && state) session.killSession(state.session);
   console.log(kill ? "已发停令并杀会话。" : "已发停令（watcher 会退出，tmux 会话保留）。");
 }
 
@@ -131,14 +162,17 @@ switch (command) {
   case "watch":
     await watchRun(rest);
     break;
+  case "supervise":
+    await superviseRun(rest);
+    break;
   case "status":
     status(rest[0]);
     break;
   case "answer":
-    rest.length >= 2 ? answer(rest[0], rest.slice(1)) : fail(USAGE);
+    rest.length ? answer(rest) : fail(USAGE);
     break;
   case "stop":
-    stop(rest[0] ?? fail(USAGE), rest.includes("--kill"));
+    rest.length ? stop(rest) : fail(USAGE);
     break;
   default:
     fail(USAGE);

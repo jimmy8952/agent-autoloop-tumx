@@ -22,6 +22,13 @@ export function onboardingKeys(capture: string): string[] | null {
   return null;
 }
 
+/** 交互 shell 的提示符（`root@glm-01:/path#`）：人路径起会话后的第一站，等到它再敲 claude 命令。 */
+export function shellPrompt(capture: string): boolean {
+  const lines = capture.split("\n").filter((line) => line.trim());
+  const last = lines.at(-1) ?? "";
+  return /^\S+@[\w.-]+:[^\n]*#\s*$/.test(last);
+}
+
 export type Question = { question: string; options: string[] };
 
 /** AskUserQuestion 的选项行：`❯ 1. 甲` 或 `  2. 乙`；❯ 是光标不是内容。 */
@@ -47,9 +54,10 @@ export function matchQuestion(capture: string): Question | null {
   return { question, options };
 }
 
-/** 输入框空着：独立成行的裸 ❯。提问/信任画面里没有这个形状。 */
+/** 输入框空着：独立成行的裸 ❯；空会话时 TUI 会带随机占位提示（`❯ Try "fix lint errors"`，每会话固定）。
+ * 提问/信任画面里没有这个形状。 */
 export function bareInputBox(capture: string): boolean {
-  return capture.split("\n").some((line) => /^❯\s*$/.test(line));
+  return capture.split("\n").some((line) => /^❯\s*$/.test(line) || /^❯\s+Try "/.test(line));
 }
 
 /** 屏幕指纹：稳定度判断用。任何 spinner 转动、行数变化都会改变它。 */

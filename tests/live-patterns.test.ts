@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { bareInputBox, confirmKeys, matchQuestion, matchTrust, onboardingKeys } from "../live/patterns.ts";
+import { bareInputBox, confirmKeys, matchQuestion, matchTrust, onboardingKeys, shellPrompt } from "../live/patterns.ts";
 
 const fixture = (name: string) =>
   readFileSync(path.join(import.meta.dirname, "fixtures", "live", name), "utf8");
@@ -51,8 +51,22 @@ test("空闲画面：裸输入框，无提问无信任", () => {
   assert.equal(matchTrust(screen), false);
 });
 
+test("空闲画面（空会话变体）：输入框带随机占位提示也算空闲", () => {
+  const screen = fixture("idle-placeholder.txt");
+  assert.equal(bareInputBox(screen), true);
+  assert.equal(matchQuestion(screen), null);
+  assert.equal(matchTrust(screen), false);
+});
+
 test("空白与噪声不误报", () => {
   assert.equal(matchQuestion(""), null);
   assert.equal(matchTrust(""), false);
   assert.equal(bareInputBox(""), false);
+});
+
+test("shell 提示符：人路径第一站，最后一行 user@host:path#", () => {
+  const screen = fixture("shell-prompt.txt");
+  assert.equal(shellPrompt(screen), true);
+  assert.equal(shellPrompt("Claude Code v2.1.325\n❯ Try \"fix lint errors\""), false);
+  assert.equal(shellPrompt(""), false);
 });
