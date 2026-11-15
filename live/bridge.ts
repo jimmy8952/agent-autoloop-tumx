@@ -32,6 +32,7 @@ async function main() {
   mb.cleanForTurn(runDir);
   session.killSession(name);
   mb.writeTask(runDir, mb.KERNEL_CONTRACT(mb.mailboxOf(runDir)) + readFileSync(promptFile, "utf8"));
+  mb.writeBootstrap(runDir);
   writeFileSync(path.join(runDir, "config.json"), JSON.stringify(config, null, 2));
   mb.logEvent(runDir, "starting", `kernel 轮次，会话 ${name}`);
   session.newSession(name, sessionCommand(config), config.tmuxCwd || undefined);

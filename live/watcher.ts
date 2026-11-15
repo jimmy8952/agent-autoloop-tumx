@@ -63,7 +63,8 @@ export async function launch(runDir: string, config: LiveConfig) {
     await sleep(1000);
   }
   if (ready < config.stablePolls) throw new Error("180 秒内 TUI 没就绪（看 live.log）");
-  await pasteAndSubmit(name, path.join(mb.mailboxOf(runDir), "task.md"), config);
+  // 粘贴通道有 ~2000 字节截断：只送短引导，全文让 agent 自己 Read task.md。
+  await pasteAndSubmit(name, path.join(mb.mailboxOf(runDir), "bootstrap.md"), config);
 }
 
 /** 代答提问：纯数字=选序号；其他文字=走 "Type something" 输入框粘贴。 */

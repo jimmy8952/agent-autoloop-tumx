@@ -50,6 +50,7 @@ async function start(args: string[]) {
   const runDir = mb.newRunDir(name);
   const prompt = mb.taskPrompt(runDir, flags["prompt-file"]);
   mb.writeTask(runDir, prompt);
+  mb.writeBootstrap(runDir);
   writeFileSync(path.join(runDir, "config.json"), JSON.stringify(config, null, 2));
   mb.logEvent(runDir, "starting", `会话 ${mb.sessionName(name)}`);
   session.newSession(mb.sessionName(name), sessionCommand(config), config.tmuxCwd || undefined);
