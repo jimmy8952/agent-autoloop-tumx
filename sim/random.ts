@@ -66,6 +66,8 @@ export function simulate(seed = 0x5eed, steps = 200000) {
                 later: [{ key: `timer-${r.id}`, at: new Date(world.now + 60000).toISOString(), about: "复查" }],
               }
             : {}),
+          // Saying it's done ends the matter only once nothing is left waiting: with an ask, it stays open.
+          ...(!fail && rng(3) === 0 && { finished: true }),
         };
         const token = credential(environment, "run", r.id, r.issued);
         const ack = world.call("finish", r.id, token, body);

@@ -45,6 +45,7 @@
 {
   "timezone": "Asia/Shanghai", // 定时和“今天”用的时区，默认系统时区
   "askFirst": ["删数据", "停服", "花钱", "对外发消息"], // 只有这几类事 Agent 才先问你
+  "instructions": "回复都用中文；先核实再动手。", // 可选：你对 Agent 的长期要求，只有你在这里改；每个新会话开头交给它一次，最多 4000 字，超过 1000 字 check 会提醒
   "sources": { "shop": { "name": "shop" }, "github": { "name": "GitHub", "adapter": "github" } },
   "agents": {
     "claude": {
@@ -81,6 +82,15 @@
       "tell": "needed", // always 每轮做成都发（没事可做、没跑成不发）/ needed 只在有卡片时（默认）/ never 只压住回执里的通知，提问和中台自己的告警照发
       "emits": { "source": "shop", "types": ["pr.*"] }, // 回执里能发什么事件，不写就不能发
       "channels": ["feishu"], // 这条规则的卡片和通知只发到这几个通道，不写就照 defaultChannels
+      "instructions": "…", // 可选：只对这条规则的长期要求，接在全局的 instructions 后面
+    },
+    {
+      "name": "做梦",
+      "when": { "cron": "17 3 * * *" }, // 做梦规则必须是定时的，整套规则只能有一条
+      "to": "claude",
+      "cwd": "~/dream",
+      "skill": "dream-memory",
+      "dreams": true, // 整理中台的记忆：只有它的回执能写 memory，见「中台记忆」
     },
   ],
   "elsewhere": [
@@ -205,6 +215,13 @@ GET /v1/work?claim=<这次领活的编号>&wait=50&running=7,8&capacity=1    Aut
     "waiting": [{ "key", "about", "at" }],                                               // 这个事项还没到期的复查
     "open":    [{ "card", "title", "text", "at" }],                                      // 同来源同组还没收尾的卡片
     "decided": [{ "card", "title", "choice", "at" }]                                     // 这个事项定过的事，只对当时那件事有效；choice 已是所选那项的文字，不是下标
+  },
+  "memory": {            // 中台记下的，接单程序只在开新会话时写进资料文件，见「中台记忆」；老中台没有这一项
+    "matter": { "key", "rule", "lane", "state", "card", "at", "latest", "openedAt", "endedAt",
+                "history": [{ "at", "kind", "text" }], "earlier": 0 },                  // 这件事的状态、最新进展和往来记录
+    "rule":   [{ "key", "text", "at" }],                                                 // 这条规则攒下的经验
+    "owner":  { "instructions": "…", "notes": [{ "key", "text", "at" }] },              // 你的长期要求和关于你的了解
+    "dream":  { … }                                                                      // 只有做梦规则有：要整理的东西
   }
 }
 ```
@@ -226,7 +243,9 @@ POST /v1/runs/12/result    Authorization: Bearer <token>   Result
   "notice":  [{ "title", "text", "key", "fyi": true }],
   "resolve": [{ "card": 3, "reason": "在哪核实了已解决" }],
   "later":   [{ "key": "…", "at": "2026-11-05T09:00:00+08:00", "about": "到时候查什么" }, { "key": "…", "cancel": true }],
-  "events":  [{ "id", "type", "subject", "summary", "detail", "link" }]
+  "events":  [{ "id", "type", "subject", "summary", "detail", "link" }],
+  "finished": true,      // 这件事彻底做完了；中台再核对没有尾巴才结束这件事
+  "memory":  [{ "scope": "rule", "rule": "规则名", "key": "…", "text": "…" }, { "scope": "owner", "key": "…", "text": "…" }]  // 只有做梦规则能写
 }
 ```
 
@@ -240,6 +259,9 @@ POST /v1/runs/12/result    Authorization: Bearer <token>   Result
 - `resolve` 只能结同来源、同组、这一轮领活前就有的卡片，越界的写进 `rejected`，不影响这一轮的结果。
 - `later` 的 `key` 范围是这个事项，同一个 `key` 再写一次就是改时间。
 - `events` 的来源由规则的 `emits` 决定，回执改不了。
+- `finished: true` 说的是这件事彻底做完了，不只是这一轮结束：`done` 只表示这一轮结束，提问时交的也是 `done`。还在等人回答、等复查、等外部结果都不写。中台核对这件事没有开着的卡片、没有没到期的复查、没有排队或在跑的轮次，才把它结束；有尾巴就等尾巴了了再结束。
+- `memory` 只有写了 `dreams: true` 的规则能交，别的规则交了整条写进 `rejected`，不影响这一轮。每一项写进去还是被拒，见「中台记忆」。
+- 老中台不认识 `finished` 和 `memory`，会拒收整份回执：中台和接单程序分开部署时先升中台。
 
 ### Agent 只需要做一件事
 
@@ -249,7 +271,7 @@ POST /v1/runs/12/result    Authorization: Bearer <token>   Result
 第一行一句话结论。可自动重试的临时失败写「没跑成：原因」，需要本人恢复的阻塞写「待你处理：原因」并交 ask，没事可做写「没事可做：原因」。其余结束本轮，事项由回执继续跟进。
 
 ```agent-autoloop
-{ "ask": [ … ], "notice": [ … ], "resolve": [ … ], "later": [ … ], "events": [ … ] }
+{ "ask": [ … ], "notice": [ … ], "resolve": [ … ], "later": [ … ], "events": [ … ], "finished": true }
 ```
 ````
 
@@ -304,11 +326,53 @@ GET /v1/cards/next?wait=50    Authorization: Bearer <通道的密钥>
 
 最小的通道只要十几行：领卡片、发文字和 `link`、报告。`link` 只给配了 `"links": true` 的通道，其他通道这里是 `null`。它打开一个不跑脚本的普通表单页，这张卡片的文字和按钮都在上面，谁拿到链接谁就能答，从卡片创建起 7 天内有效，过期后也不再显示卡片内容，适合只会发文字的群机器人、邮件。能发按钮、能收回调的通道（比如飞书）用按钮，身份由平台核验，更安全。一台电脑上用时 `link` 是本机地址，手机打不开，要手机批请把中台放到有公网地址的机器上，并配好 `publicUrl`。
 
+## 中台记忆
+
+中台只记经过中台的东西。Agent 自己的记忆（Claude Code 的 CLAUDE.md 和 memory、你给 Agent 装的 hook、Codex 自己的办法）由 Agent 自己管，中台不碰。中台记三层，都存在中台，从事实日志派生，日志永远保留：
+
+| 层   | 记什么                                                       | 谁来写                                     | 多久有效                         |
+| ---- | ------------------------------------------------------------ | ------------------------------------------ | -------------------------------- |
+| 事项 | 这件事经过中台的往来：事件、每一轮的结论、提问、通知、你的回答、约的复查 | 中台在每次往来时自动记一行，Agent 不用写   | 事项结束或搁置后不再交给新会话   |
+| 规则 | 这类活攒下的经验：纠正过的做法、反复出现的原因、正常时的数量 | 做梦规则的回执，直接生效                   | 规则还在就有效，做梦定期整理     |
+| 本人 | 长期要求（`instructions`）和关于你的了解（角色、偏好）       | 长期要求只有你在 `rules.json` 写；了解由做梦提议、你确认 | 一直有效，只有你能删         |
+
+不为 Agent 设记忆：Agent 是可以替换的执行者，规则换了 Agent，事还是那件事。
+
+**事项记忆。** 每个事项一份记录，开头是状态（进行中、等你回答、等复查、已完成、搁置）和最新进展（最后一轮的结论），后面是往来，每行只有标题和结论，最多 200 字，正文还在日志里，用 `why` 看。新会话拿到最近 60 行，`earlier` 是前面还有几行。定时规则每个时刻是一个事项（编号是 `规则名@时刻`），每天从空白开始；派活仍按整条规则一次一轮，两天不会同时跑。
+
+事项的生命周期：
+
+- **结束**：一轮交了 `finished: true`，而且没有开着的卡片、没到期的复查、排队或在跑的轮次。
+- **搁置**：没尾巴了，可最后一轮没说做完，20 分钟后搁置。中台不会自己再叫醒一件交了 `done` 的事，搁置把它收口；`agent-autoloop memory` 和 `status` 里能看到。
+- **重新打开**：结束或搁置的事项又来了事件、回答或复查，接着原来的记录往下记，要重新说一次做完。
+
+**只在新会话时交一次。** 每一轮照常拿到这一轮的事件、回答和复查；记忆只在开新会话时写进资料文件（`memory`），长期要求写进提示词。接着原会话的轮次已经看过，不重复给。中台不知道续接会不会成功，所以每份活都带着记忆，由接单程序决定：续接成功不写，接不上改开新会话时再写。这些情况都会开新会话：规则没写 `resume`（默认）、原会话接不上、换了 Agent、上一轮被停掉、原会话正被别的轮次占着、`command` 这类没有会话的 Agent、常驻 Agent 重启。
+
+**做梦。** 写了 `dreams: true` 的规则，每次拿到 `memory.dream`：上次做梦以后结束或搁置的事项（最多 30 件，每件最近 40 行）、各规则现有的经验、已记住的关于你的了解、还在等你确认的提议、上次被拒收的条目和上限。它在回执的 `memory` 里交回改动：
+
+- 规则的经验直接生效：`{"scope":"rule","rule":"规则名","key":"…","text":"…"}`，同一个 `key` 是改写，`forget: true` 删掉。一条最多 100 字，每条规则一共最多 800 字（约 1000 Token）。删除先生效，同一份回执里可以先删后写。
+- 关于你的只是提议：`{"scope":"owner","key":"…","text":"…"}`，一条最多 80 字。不能删你的条目。
+- 超出上限、规则不存在、删你的条目，都写进 `rejected`，原因同时留给下一次做梦。
+
+有提议时发一张卡片「要不要记住这些关于你的事？」，选项是「全部采纳」「都不要」，也可以回一句「采纳 1、3」；采纳的总共不超过 400 字（约 500 Token），放不下的不记。回答这张卡片不会派新的一轮。7 天不回答，卡片关掉，提议作废；卡片开着时新的提议先攒着，等它关了，下一次做梦再发。没有提议就不发卡片。规则的改动和搁置的件数，有卡片时顺带写在卡片上，平时用 `agent-autoloop memory` 看。
+
+记忆里有别人写的字，做梦也可能把注入的内容记下来：所以记忆和资料一样只放进资料文件，标明是资料，不进提示词；关于你的必须经你确认；每条记着是哪一轮写的。中台按字数卡上限，因为它没有分词器。
+
+```
+GET  /v1/memory[?rule=规则名]   Authorization: Bearer <本人的密钥>
+→ 200 { "instructions", "owner", "proposed", "rules": [{ "name", "instructions", "memory", "used" }], "open", "stalled", "lastDream", "limits" }
+
+POST /v1/memory/forget          { "scope": "rule", "rule": "规则名", "key": "…" } 或 { "scope": "owner", "key": "…" }
+→ 200 { "changed": true }
+```
+
+`agent-autoloop memory [规则]` 和 `agent-autoloop forget <规则> <名字>`、`agent-autoloop forget --owner <名字>` 就是这两个请求。忘掉的是投影里的记忆，日志里仍有它曾经在过。
+
 ## 本人：看全局、回答、结案、停止
 
 ```
 GET  /v1/state              Authorization: Bearer <本人的密钥>
-→ 200 { "seq", "totals", "cards", "recentCards", "agents", "channels", "sources", "lines", "pauses", "skipped", "elsewhere", "runs", "nextBefore", "hasMore", "unrouted", "spending", "timers", "now", "timezone" }
+→ 200 { "seq", "totals", "cards", "recentCards", "agents", "channels", "sources", "lines", "pauses", "skipped", "elsewhere", "runs", "nextBefore", "hasMore", "unrouted", "spending", "timers", "stalled", "now", "timezone" }
 
 POST /v1/cards/56/answer    { "choice": 1 } 或 { "text": "别的想法" }
 POST /v1/cards/56/resolve   { "reason": "不用决定了，因为……" }
@@ -396,6 +460,8 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 | 规则删掉或改名了                         | 还没领走的和之后没跑成的这一轮记为 `cancelled`，不再派发，发一张通知卡片；之后到期的复查也不再派发，同样发通知卡片，写明复查的开头；已经在跑的跑完照常收结果                                                                                                                                                                                                              |
 | 规则暂停了                               | 到点跳过、事件不接，都不积压；排队的留着；恢复后不自动补跑，定时的从下一个时刻照常跑；恢复时列出跳过的事件，用 `replay` 补跑，每条只补一次                                                                                                                                                                                                                                |
 | 暂停写了 `until`，中台到点时没开着       | 醒来就恢复，暂停期间的时刻不补                                                                                                                                                                                                                                                                                                                                            |
+| 一轮交了 `done`，没卡片、没复查，也没说做完 | 中台不会再自己叫醒这件事；20 分钟后把它的记录搁置，不再交给新会话，`status` 和 `memory` 里列出来；再来事件就重新打开 |
+| 做梦写的记忆超出上限                     | 超出的那几条写进 `rejected`，其余照常生效；下一次做梦能看到被拒的原因 |
 | 规则文件被删、移走或读不到               | 旧规则继续跑，告诉你一次；放回去就接着用。从没载入过规则的新中台读不到就不启动                                                                                                                                                                                                                                                                                            |
 
 这是“至少一次”的系统：Agent 可能被叫两次，所以 Skill 里有副作用的动作要先核实当前状态。
@@ -409,7 +475,7 @@ POST /v1/rules/巡检/run        { "subject": "#12", "reason": "看一眼" }    
 | 一轮的 token     | 报告这一轮的这一次执行                                      | 碰别的轮次                             |
 | 通道的密钥       | 领卡片、报告、转达 `answerers` 的回答                       | 其他一切                               |
 | 带权限的卡片链接 | 回答这一张卡片                                              | 其他一切                               |
-| 本人的密钥       | 看全部、回答、结案、停止，暂停、恢复、补跑、立即运行规则    | 发事件，领活，改规则（规则只在文件里） |
+| 本人的密钥       | 看全部、回答、结案、停止，暂停、恢复、补跑、立即运行规则，看和删记忆 | 发事件，领活，改规则（规则只在文件里） |
 
 普通访问密钥只保存 SHA-256；本机主密钥另存 `master.key`。接单程序不把中台密钥放进 Agent 的提示词或资料文件，文件系统的访问范围由 Agent 权限决定。
 
@@ -495,7 +561,7 @@ Webhook 通道的 `config.json` 配置使用 `use: "webhook"`、`url` 和 `platf
 
 现成场景与内置插件的入口见 [README](../README.md#拿来即用的场景模板)，开发模板见[写插件](plugins.md)。插件文件名仍使用协议中的 `source.ts`，对应面向用户的“事件插件”。
 
-`npm run benchmark` 打印冷启动、空闲和千连接内存、逐条落盘写入、派活 p99、排队很深时被挡下的心跳 p99 和模拟吞吐，不设达标线。数字在 README，是 Apple M5 Pro 上的本地实测，不代表服务器容量；不通过改变采样时间或主动触发 GC 降低读数。日志只追加，不压缩，磁盘占用仍随历史增长。常驻内存不保存全部历史，待处理工作及返回结果仍会占用内存；统计总量仍需遍历数据库索引。没有总览页、工作流画布、Agent 记忆、模型路由、多租户或插件市场。
+`npm run benchmark` 打印冷启动、空闲和千连接内存、逐条落盘写入、派活 p99、排队很深时被挡下的心跳 p99 和模拟吞吐，不设达标线。数字在 README，是 Apple M5 Pro 上的本地实测，不代表服务器容量；不通过改变采样时间或主动触发 GC 降低读数。日志只追加，不压缩，磁盘占用仍随历史增长。常驻内存不保存全部历史，待处理工作及返回结果仍会占用内存；统计总量仍需遍历数据库索引。没有总览页、工作流画布、Agent 自己的记忆（中台只记经过它的往来，见「中台记忆」）、模型路由、多租户或插件市场。
 
 ### 历史增长实测
 

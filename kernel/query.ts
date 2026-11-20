@@ -3,6 +3,7 @@ import { credential, type Environment } from "./credentials.ts";
 import { rows, type Fact, type Row, type View } from "./evolve.ts";
 import { ruleOf, type Rule, type Rules } from "./rules.ts";
 import type { Job } from "../protocol/job.ts";
+import { memoryOf } from "./memory.ts";
 
 export function configuration(view: View, version?: number): Rules {
   const current = view.get("config", "rules");
@@ -123,7 +124,8 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
 
 export function jobOf(view: View, run: Row, env: Environment): Job {
   const rules = configuration(view, run.rules_version);
-  const { name, cwd, skill, prompt, title, emits } = ruleOf(rules, run.rule)!;
+  const rule = ruleOf(rules, run.rule)!;
+  const { name, cwd, skill, prompt, title, emits, dreams } = rule;
   const { maxActive: _maxActive, ...agent } = rules.agents[run.agent];
   const events = eventsOf(view, run.id);
   const eventIds = events.map((event) => event.id);
@@ -140,7 +142,7 @@ export function jobOf(view: View, run: Row, env: Environment): Job {
     run: run.id,
     token: credential(env, "run", run.id, run.issued),
     attempt: run.attempts + 1,
-    rule: { name, cwd, skill, prompt, title, emits },
+    rule: { name, cwd, skill, prompt, title, emits, ...(dreams && { dreams }) },
     agent: { ...agent, id: run.agent },
     session: run.session ?? run.resume,
     askFirst: rules.askFirst,
@@ -177,6 +179,7 @@ export function jobOf(view: View, run: Row, env: Environment): Job {
           return { card: id, title, choice: choice === null ? answer : JSON.parse(options)[choice], at: decided_at };
         }),
     },
+    memory: memoryOf(view, run, rules, rule),
   };
 }
 

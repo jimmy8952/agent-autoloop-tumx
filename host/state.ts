@@ -12,17 +12,20 @@ const VIEWS = {
   events: "id source key type subject summary detail link routed paused received_at",
   runs:
     "id rule agent grp lane state attempts not_before claim last_result cancel_at resume session link created_at " +
-    "claimed_at seen_at finished_at manual summary error usage",
+    "claimed_at seen_at finished_at manual summary error usage matter",
   run_events: "run_id event_id",
   cards:
     "id key kind title text options recommend about state fyi quiet choice answer by result rule lane grp source " +
-    "agent session run_id answer_event version created_at decided_at closed_at",
+    "agent session run_id answer_event version created_at decided_at closed_at matter",
   deliveries: "card_id channel version ref tries first_try_at not_before error given_up",
-  timers: "id rule lane key source agent session about at event_id created_at",
+  timers: "id rule lane key source agent session about at event_id created_at matter",
   schedules: "rule cron next_at skipped_at",
   seen: "kind name seen_at",
   keys: "kind name hash created_at",
   pauses: "name by reason since until",
+  matters: "key rule lane state finished latest entries opened_at ended_at stall_at",
+  matter_log: "id matter at kind text",
+  memory: "key scope rule name text run at card_id",
 };
 
 /** Made anew at every start, so changing them takes no rebuild and no migration. */
@@ -242,5 +245,9 @@ export function stateOf(now: number, before: number | undefined, rules: Rules, {
     hasMore,
     nextBefore: hasMore ? page[PAGE - 1].id : null,
     unrouted: unrouted(),
+    // Set aside: nothing waiting, and no round said it was done. More news reopens one.
+    stalled: all<Row>(
+      "SELECT rule, lane, latest, ended_at FROM matters WHERE state = 'stalled' ORDER BY ended_at DESC LIMIT 10",
+    ).map(({ rule, lane, latest, ended_at }) => ({ rule, lane, latest: latest ?? "", at: ended_at })),
   };
 }

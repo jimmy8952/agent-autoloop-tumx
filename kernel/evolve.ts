@@ -14,15 +14,18 @@ export const TABLES = [
   "config",
   "due",
   "pauses",
+  "matters",
+  "matter_log",
+  "memory",
 ] as const;
 export type Table = (typeof TABLES)[number];
 export type Change = { table: Table; key: string; row: Row | null };
 export type Fact = { version: 1; seq: number; at: number; type: string; changes: Change[]; meta?: Row };
 export type Match = Record<string, SQLInputValue | SQLInputValue[] | { not: null }>;
-const NUMBERED = new Set<Table>(["events", "runs", "cards", "timers"]);
+const NUMBERED = new Set<Table>(["events", "runs", "cards", "timers", "matter_log"]);
 const indexes: Partial<Record<Table, string[][]>> = {
   events: [["source", "key"], ["routed", "id"], ["paused", "id"], ["id"]],
-  runs: [["state", "id"], ["rule", "lane", "state", "id"], ["id"], ["finished_at"]],
+  runs: [["state", "id"], ["rule", "lane", "state", "id"], ["id"], ["finished_at"], ["matter", "state", "id"]],
   run_events: [["run_id"], ["event_id"]],
   cards: [
     ["key", "id"],
@@ -33,14 +36,23 @@ const indexes: Partial<Record<Table, string[][]>> = {
     ["run_id"],
     ["id"],
     ["fyi", "created_at"],
+    ["matter", "state", "id"],
   ],
   timers: [
     ["event_id", "id"],
     ["rule", "lane", "key", "id"],
     ["rule", "lane", "event_id", "id"],
+    ["matter", "event_id", "id"],
   ],
   deliveries: [["channel"], ["card_id"]],
   due: [["at"]],
+  matters: [
+    ["state", "stall_at"],
+    ["state", "ended_at"],
+    ["rule", "state"],
+  ],
+  matter_log: [["matter", "id"]],
+  memory: [["scope", "rule"]],
 };
 const field = (name: string) => `json_extract(data,'$.${name}')`;
 const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
@@ -183,6 +195,7 @@ export function keyOf(table: Table, row: Row): string {
   if (table === "seen" || table === "keys") return `${row.kind}:${row.name}`;
   if (table === "due") return `${row.kind}:${row.key}`;
   if (table === "pauses") return row.name;
+  if (table === "matters" || table === "memory") return row.key;
   return "rules";
 }
 export function empty(db = new DatabaseSync(":memory:")) {

@@ -23,6 +23,10 @@ type RuleOptions = RuleWords & {
   maxActive?: number;
   resume?: boolean;
   emits?: EventFilter;
+  /** The owner's standing directions for this rule's work, handed to every new session with the hub's own ones. */
+  instructions?: string;
+  /** A rule whose rounds curate what the hub remembers: only its receipts may write memory. */
+  dreams?: boolean;
 };
 /** Without channels a rule's cards reach the default ones, or every channel if there are none; with them, only those. */
 type Reach = { channels?: string[] };
@@ -46,6 +50,8 @@ type Registered = { sources: Record<string, Source>; agents: Record<string, Agen
 export type Rules = Registered & {
   timezone: string;
   askFirst: string[];
+  /** The owner's standing directions, handed to every new session. Only the owner writes them, here. */
+  instructions?: string;
   /** Where a card that names no channels of its own goes: a tell, the hub's own alerts, a rule without a list. */
   defaultChannels?: string[];
   rules: Rule[];

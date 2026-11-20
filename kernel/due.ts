@@ -1,6 +1,7 @@
 // The next moment each thing needs the clock: schedules, reviews, retries, card resends, a worker gone quiet, a lease
 // run out. The shell keeps one timer, for the earliest of them, so nothing has to poll.
 import { rows, type Row, type View } from "./evolve.ts";
+import { PROPOSALS_OPEN } from "./memory.ts";
 import { configuration, waitingOn, workers } from "./query.ts";
 
 export const MINUTE = 60_000;
@@ -51,6 +52,11 @@ export function deadlines(view: View, now: number) {
     const notBefore = Date.parse(delivery.not_before);
     if (notBefore > now) add("delivery", `${delivery.card_id}:${delivery.channel}`, notBefore);
   }
+  for (const matter of rows(view, "matters", { state: "open", stall_at: { not: null } })) {
+    add("stall", matter.key, Date.parse(matter.stall_at));
+  }
+  const proposals = view.get("memory", PROPOSALS_OPEN);
+  if (proposals) add("proposals", "card", Date.parse(proposals.expires_at));
   for (const worker of workers(view)) {
     const seen = view.get("seen", `worker:${worker}`);
     const waiting = waitingOn(view, worker, now);

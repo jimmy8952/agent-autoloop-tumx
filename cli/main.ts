@@ -6,7 +6,7 @@ import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { hubClient } from "../protocol/client.ts";
-import { parseRules } from "../protocol/rules.ts";
+import { parseRules, rulesWarnings } from "../protocol/rules.ts";
 import { CONFIG_FILE, readConfig, writeConfig, type Config } from "../host/config.ts";
 import { HOME, RULES_FILE } from "../host/home.ts";
 import { findOnPath, psQuote } from "../host/command.ts";
@@ -42,6 +42,8 @@ const HELP = `Agent 自动化中台
                                      --json 输出 /v1/state 的原始结构，给脚本用
   agent-autoloop runs [规则] [--before <第几轮>] [--json]
                                     列出做完的轮次，可以只看一条规则、往前翻；细节再用 why
+  agent-autoloop memory [规则] [--json]  中台记着什么：关于你的、每条规则的经验、进行中和搁置的事
+  agent-autoloop forget <规则> <名字>    忘掉一条规则的经验；关于你的用 forget --owner <名字>
   agent-autoloop answer <卡片> [序号] [--text 别的想法]
                                     回答一张卡片；通知不用写序号
   agent-autoloop resolve <卡片> <结果>   这件事不用决定了，写一句结果
@@ -150,6 +152,11 @@ rules.json 里这个定时任务要写 cwd；你答了，中台叫醒它的 Agen
       agent-autoloop key remove <种类> <名字>`,
   },
   mcp: { flags: [], usage: "用法：agent-autoloop mcp" },
+  memory: { flags: ["json"], usage: "用法：agent-autoloop memory [规则] [--json]" },
+  forget: {
+    flags: ["owner"],
+    usage: "用法：agent-autoloop forget <规则> <名字>，关于你的：agent-autoloop forget --owner <名字>",
+  },
   pause: {
     flags: ["reason", "until"],
     usage: "用法：agent-autoloop pause <规则> [--reason 原因] [--until 时间]",
@@ -511,7 +518,9 @@ async function answer(args: string[]) {
       ? "这张卡片已经处理过了，这次没有改动。"
       : done.state === "closed"
         ? "结案了。"
-        : "收到，Agent 接着干。",
+        : done.state === "done"
+          ? `${done.result ?? "记下了"}。`
+          : "收到，Agent 接着干。",
   );
 }
 
@@ -676,8 +685,9 @@ function checkRulesFile(file: string) {
 
 function check(args: string[]) {
   const file = path.resolve(args[0] ?? RULES_FILE);
-  checkRulesFile(file);
+  const checked = checkRulesFile(file);
   console.log(`规则没问题：${file}`);
+  for (const warning of rulesWarnings(checked)) console.log(`提醒：${warning}`);
 }
 
 async function key(args: string[]) {
@@ -813,6 +823,27 @@ async function why(args: string[]) {
   console.log(formatWhy(id, facts));
 }
 
+async function memory(args: string[]) {
+  const { named, rest } = flags(args);
+  if (rest.length > 1) return fail(TAKES.memory.usage);
+  const remembered = await ownerClient().memory(rest[0]);
+  if (named.json !== undefined) return console.log(JSON.stringify(remembered, null, 2));
+  const { memoryText } = await import("./memory.ts");
+  console.log(memoryText(remembered, rest[0]));
+}
+
+async function forget(args: string[]) {
+  const { named, rest } = flags(args);
+  const owner = text(named.owner);
+  if (owner !== undefined ? rest.length : rest.length !== 2) return fail(TAKES.forget.usage);
+  const body =
+    owner !== undefined
+      ? { scope: "owner" as const, key: owner }
+      : { scope: "rule" as const, rule: rest[0], key: rest[1] };
+  const { changed } = await ownerClient().forget(body);
+  console.log(changed ? "忘掉了。" : "没有这一条，可能已经忘掉了。");
+}
+
 async function checkConformance(args: string[]) {
   const { named, rest } = flags(args);
   const file = text(named.config) ?? process.env.AGENT_AUTOLOOP_CONFORMANCE;
@@ -918,6 +949,8 @@ const commands: Record<string, () => unknown> = {
   try: () => tryIt(),
   status: () => status(flags(args).named),
   why: () => why(args),
+  memory: () => memory(args),
+  forget: () => forget(args),
   runs: () => runs(args),
   conformance: () => checkConformance(args),
   answer: () => answer(args),

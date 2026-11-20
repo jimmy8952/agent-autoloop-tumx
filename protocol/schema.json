@@ -288,10 +288,66 @@
             "$ref": "#/$defs/event"
           },
           "maxItems": 100
+        },
+        "finished": {
+          "type": "boolean"
+        },
+        "memory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/memory-write"
+          },
+          "maxItems": 50
         }
       },
       "required": ["outcome"],
       "additionalProperties": false
+    },
+    "memory-write": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "scope": { "const": "rule" },
+            "rule": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+            "key": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
+          },
+          "required": ["scope", "rule", "key", "text"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "scope": { "const": "rule" },
+            "rule": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S" },
+            "key": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+            "forget": { "const": true }
+          },
+          "required": ["scope", "rule", "key", "forget"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "scope": { "const": "owner" },
+            "key": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+            "text": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
+          },
+          "required": ["scope", "key", "text"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "scope": { "const": "owner" },
+            "key": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+            "forget": { "const": true }
+          },
+          "required": ["scope", "key", "forget"],
+          "additionalProperties": false
+        }
+      ]
     },
     "started": {
       "type": "object",
@@ -565,6 +621,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "matter": { "type": ["object", "null"] },
+            "rule": { "type": "array" },
+            "owner": { "type": "object" },
+            "dream": { "type": "object" }
+          },
+          "required": ["matter", "rule", "owner"],
+          "additionalProperties": true
         }
       },
       "required": ["run", "token", "attempt", "rule", "agent", "session", "askFirst", "context"],

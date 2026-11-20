@@ -24,6 +24,7 @@ const NAMES = [
   "feishu-brief",
   "inbox-triage",
   "browser-handoff",
+  "dream",
 ];
 const scratch = mkdtempSync(join(tmpdir(), "agent-autoloop-recipes-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));

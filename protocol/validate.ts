@@ -12,6 +12,8 @@ export const DELIVERY_REF = 500;
 export type Later = { key: string; at?: string; about?: string; cancel?: boolean };
 export type Ask = { title: string; text: string; options: string[]; recommend?: number; about?: string; key?: string };
 export type Notice = { title: string; text: string; key?: string; fyi?: boolean };
+/** A dream's change to what the hub remembers: a rule's experience, or a proposal about the owner. */
+export type MemoryWrite = { scope: "rule" | "owner"; rule?: string; key: string; text?: string; forget?: boolean };
 export type Usage = { input?: number; output?: number; cached?: number; cost?: number };
 
 /** Missing figures stay missing: zero is a price or token count that was actually reported. */
@@ -33,6 +35,9 @@ export type Result = {
   resolve?: { card: number; reason: string }[];
   later?: Later[];
   events?: EventInput[];
+  /** The Agent says the matter is done for good: the hub ends it once nothing is left waiting. */
+  finished?: boolean;
+  memory?: MemoryWrite[];
 };
 export type Rejected = { card?: number; what?: string; reason: string };
 
@@ -147,6 +152,13 @@ const validLater = (later: Item) =>
     ? later.at === undefined
     : dateTime(later.at) && text(later.about, 4000) && later.cancel === undefined);
 
+/** The shape only: how long an entry may be, and how much a rule may keep, is the hub's to say, entry by entry. */
+const validMemory = (entry: Item) =>
+  only(entry, ["scope", "rule", "key", "text", "forget"]) &&
+  (entry.scope === "rule" ? text(entry.rule, 200) : entry.scope === "owner" && entry.rule === undefined) &&
+  text(entry.key, 100) &&
+  (entry.forget === true ? entry.text === undefined : text(entry.text, 500) && entry.forget === undefined);
+
 const validUsage = (usage: unknown) =>
   usage === undefined ||
   (isItem(usage) &&
@@ -158,7 +170,20 @@ export function parseResult(input: unknown): Result {
   }
   const result = { ...input } as Item;
   if (
-    !only(result, ["outcome", "summary", "error", "session", "usage", "ask", "notice", "resolve", "later", "events"])
+    !only(result, [
+      "outcome",
+      "summary",
+      "error",
+      "session",
+      "usage",
+      "ask",
+      "notice",
+      "resolve",
+      "later",
+      "events",
+      "finished",
+      "memory",
+    ])
   ) {
     throw new InputError("结果里有不认识的字段");
   }
@@ -178,6 +203,14 @@ export function parseResult(input: unknown): Result {
   }
   if (!listOf(result.later, 10, validLater)) {
     throw new InputError("later 每一项要有 key，以及带时区的 at 和 about，或者 cancel: true，最多 10 项");
+  }
+  if (result.finished !== undefined && typeof result.finished !== "boolean") {
+    throw new InputError("finished 只能是 true 或 false");
+  }
+  if (!listOf(result.memory, 50, validMemory)) {
+    throw new InputError(
+      "memory 每一项要有 scope（rule 或 owner）和 key，写 text 或 forget: true；scope 是 rule 时要写 rule；最多 50 项",
+    );
   }
   if (result.events !== undefined) {
     if (!items(result.events, 100)) throw new InputError("events 最多 100 项");

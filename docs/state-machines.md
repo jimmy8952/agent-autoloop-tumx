@@ -7,12 +7,16 @@
 | 对象 | 状态与存储 | 谁在哪里改 |
 | --- | --- | --- |
 | 事件 | `events` 的 `source + key` 去重；`routed/paused/hops` 区分已派、暂停跳过、无人接、超过 8 层未派，记下后不再改；补跑不改事件，接到这条规则的一轮上就算补过 | `kernel/decide.ts` 的 `ingest/recordEvent` 接来源、回执、回答、时钟和手动运行；`replayRule` 补跑暂停跳过的事件 |
-| 事项 | 没有单独状态列；`rule + lane` 对应的轮次、未结卡片、未来复查共同表达进展 | `enqueue/answer/tick/retryLater`；运行中来的事件排下一轮，失败时把同事项的队列合进重试轮次 |
+| 事项 | 派活按 `rule + lane`：对应的轮次、未结卡片、未来复查共同表达进展 | `enqueue/answer/tick/retryLater`；运行中来的事件排下一轮，失败时把同事项的队列合进重试轮次 |
+| 事项记忆 | `matters[key].state`: `open → ended` 或 `open → stalled`；`ended/stalled → open`（重新打开）。`key` 是 `[规则, lane, 时刻]`：定时规则每个时刻一个，其余与 lane 相同。`finished` 记最后一轮有没有说做完，`stall_at` 是搁置的到期时间；往来记录在 `matter_log`，每行一条 | `enqueue` 打开或重新打开并记一行（同时清掉 `finished`）；`applyReceipt/retryLater/stopRun/answer/resolve/cancel` 记一行；`settleMatter` 判断：没尾巴且说了做完就 ended，没尾巴没说就登记 20 分钟后搁置，有尾巴就撤销搁置；`tick` 到点仍没尾巴才 stalled |
+| 规则与本人的记忆 | `memory[key]`：`scope` 是 `rule`（规则的经验）、`owner`（关于本人的了解）、`proposal`（等本人确认）或 `meta`（上次做梦、开着的提议卡片） | 只有 `dreams` 规则的 `applyReceipt` 写 rule 和 proposal；`answer` 回答提议卡片才写 owner；`forgetMemory` 是本人删除；`tick` 让 7 天没回答的提议作废 |
 | 轮次 | `runs.state`: `queued → claimed → done/nothing/cancelled`；`claimed → unknown`；失败从 claimed/unknown 回 queued，`attempts/not_before` 表达等重试 | `claimNext/finish/applyReceipt/retryLater/cancel/stopRun/sweep`。unknown 不是失败，迟到结果照收，后续新活可以继续 |
 | 停止 | `claimed + cancel_at` 表示正在停；进程结束才 cancelled；排队可直接取消 | 本人 `cancel`，worker 停整个进程组后交结果；停止期间收到 failed 也归 cancelled，不能重派 |
 | 执行归属 | `agent/rules_version/issued/claim` 固定领取归属；`session/resume` 是续接提示 | `assignQueued/settleSession/claimNext/started/finish`。排队用最新规则，领取后保留原 worker 和规则快照；重复 claim 换 token |
 
 `done + open 提问`、`done + 未来复查` 都合法：只结束这一轮。连续失败最多 10 次，终态轮次不能重排。本人要再做用新事件或手动 `run`。已交回的 `last_issued/last_result/last_answer` 保证同 token 同内容重交只确认一次，不同内容返回 409。
+
+结束或搁置的事项不能还有排队、在跑或不确定的轮次、开着的卡片、没到期的复查（模拟的不变式守着）；新的往来总是先把它重新打开。`done` 不结束事项，只有 `finished: true` 加上没尾巴才结束。
 
 禁止同组同 lane 同时领取两轮、停止后自动重试、换 Agent 沿用旧 Agent 会话、回答/复查丢掉原 lane。unknown 放开组后，新轮仍不能打开可能在用的会话。并发、原会话及 token 检查在上述入口统一执行。
 

@@ -1,0 +1,17 @@
+{
+  "sources": {},
+  "agents": {
+    "curator": { "name": "整理人", "worker": "mac-mini", "use": "claude", "access": "read" }
+  },
+  "rules": [
+    {
+      "name": "做梦",
+      "when": { "cron": "17 3 * * *" },
+      "to": "curator",
+      "cwd": "~/dream",
+      "skill": "dream-memory",
+      "dreams": true,
+      "tell": "never"
+    }
+  ]
+}

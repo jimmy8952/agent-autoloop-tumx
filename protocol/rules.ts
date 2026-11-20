@@ -40,6 +40,10 @@ const isTitle: Check = (value) =>
   !/[{}]/.test(value.replaceAll("{id}", "").replaceAll("{subject}", ""));
 const isFolder: Check = (value) =>
   typeof value === "string" && /^(~[/\\]|\/|[a-z]:[/\\]|\\\\[^\\]+\\[^\\]+)/i.test(value);
+/** Standing directions go into every new session's prompt: past this they cost more than they say. */
+export const INSTRUCTIONS_WARN = 1000;
+const INSTRUCTIONS_MAX = 4000;
+const isInstructions: Check = (value) => isText(value) && [...(value as string)].length <= INSTRUCTIONS_MAX;
 const FOLDER = "要是绝对目录（如 ~/code、/srv/app、C:\\code 或 \\\\服务器\\共享目录）";
 
 function isKeyOf(table: object): Check {
@@ -91,7 +95,12 @@ function checkRule(issues: string[], rules: Rules, rule: Rule, names: Set<string
     ["tell", (value) => TELLS.includes(value as string), `只能是 ${TELLS.join("、")}`, true],
     ["emits", isObject, "要是一个对象", true],
     ["channels", isSomeWords, "要是通道编号的列表", true],
+    ["instructions", isInstructions, `要是 ${INSTRUCTIONS_MAX} 字以内的文字`, true],
+    ["dreams", (value) => typeof value === "boolean", "只能是 true 或 false", true],
   ]);
+  if (isObject(rule) && rule.dreams === true && isObject(when) && "source" in when) {
+    issues.push(`${where}是做梦规则，要用 cron 定时，比如每天凌晨一次`);
+  }
   if (isObject(when) && "source" in when) {
     checkFields(issues, `${where}的 when `, when, [
       ["source", isKeyOf(rules.sources), `不是已登记的来源：${when.source}`],
@@ -122,6 +131,22 @@ function checkRule(issues: string[], rules: Rules, rule: Rule, names: Set<string
   rule.tell ??= "needed";
 }
 
+/** What is allowed but worth a word: standing directions so long that every new session pays for them. */
+export function rulesWarnings(rules: Rules): string[] {
+  const warnings: string[] = [];
+  const long = (text: string | undefined) => text !== undefined && [...text].length > INSTRUCTIONS_WARN;
+  if (long(rules.instructions)) {
+    warnings.push(`rules.json 的 instructions 超过 ${INSTRUCTIONS_WARN} 字：每个新会话都要带上它，越长越费钱`);
+  }
+  for (const rule of rules.rules)
+    if (long(rule.instructions)) {
+      warnings.push(
+        `规则「${rule.name}」的 instructions 超过 ${INSTRUCTIONS_WARN} 字：每个新会话都要带上它，越长越费钱`,
+      );
+    }
+  return warnings;
+}
+
 export function parseRules(json: string, now: number, timezone: string): Rules {
   let parsed: unknown;
   try {
@@ -133,6 +158,7 @@ export function parseRules(json: string, now: number, timezone: string): Rules {
   checkFields(issues, "rules.json ", parsed, [
     ["timezone", isZone, "不是有效的时区", true],
     ["askFirst", isWords, "要是文字的列表", true],
+    ["instructions", isInstructions, `要是 ${INSTRUCTIONS_MAX} 字以内的文字`, true],
     ["sources", isObject, "要是一个对象"],
     ["agents", isObject, "要是一个对象"],
     ["channels", isObject, "要是一个对象", true],
@@ -187,6 +213,9 @@ export function parseRules(json: string, now: number, timezone: string): Rules {
   const names = new Set<string>();
   for (const rule of rules.rules) checkRule(issues, rules, rule, names, now);
   if (issues.length) throw new RulesError(issues);
+  const dreamers = rules.rules.filter((rule) => rule.dreams === true).map((rule) => rule.name);
+  // One curator: each reads what has ended since the last dream, and two would each see only part of it.
+  if (dreamers.length > 1) issues.push(`只能有一条做梦规则，现在有 ${dreamers.length} 条：${dreamers.join("、")}`);
   const limits = new Map<string, number | undefined>();
   for (const { group, parallel } of rules.rules) {
     if (limits.has(group) && limits.get(group) !== parallel) issues.push(`组「${group}」里的规则 parallel 要一致`);

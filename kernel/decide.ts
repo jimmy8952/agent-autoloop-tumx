@@ -21,6 +21,21 @@ import {
 } from "./query.ts";
 import { cronOf, eventRule, ruleOf, SCHEDULE, typeMatches, type Rule, type Rules } from "./rules.ts";
 import {
+  chars,
+  clip,
+  idle,
+  LAST_DREAM,
+  LIMITS,
+  matterKey,
+  ownerMemoryKey,
+  PROPOSALS_CARD,
+  PROPOSALS_LAST,
+  PROPOSALS_OPEN,
+  proposals,
+  ruleMemoryKey,
+  STALL_AFTER,
+} from "./memory.ts";
+import {
   addUsage,
   ANSWER_BY,
   ANSWER_REF,
@@ -29,6 +44,7 @@ import {
   parseEvent,
   parseResult,
   type Later,
+  type MemoryWrite,
   type Rejected,
   type Result,
 } from "../protocol/validate.ts";
@@ -179,8 +195,69 @@ function createCard(draft: Draft, spec: Row) {
 const notify = (draft: Draft, key: string, title: string, text: string, extra: Row = {}) =>
   createCard(draft, { key, kind: "notice", title, text, ...extra });
 
+/**
+ * The matter an event starts or goes on with. A schedule's moment, or a round of a scheduled rule asked for by hand, is a
+ * matter of its own: each day starts afresh. Anything else on a rule's thread goes on with the one before it.
+ */
+function matterFor(draft: Draft, rule: Rule, event: number, lane: string) {
+  const { type, source, key } = draft.view.get("events", event)!;
+  const occasion = !eventRule(rule) && ["schedule.tick", "run.manual"].includes(type) ? `${source}:${key}` : null;
+  return matterKey(rule.name, lane, occasion);
+}
+
+/** A line in a matter's record: what went through the hub for it, in brief. */
+function logMatter(draft: Draft, key: string | null | undefined, kind: string, text: string) {
+  const matter = key ? draft.view.get("matters", key) : undefined;
+  if (!matter) return;
+  add(draft, "matter_log", { matter: key, at: draft.at, kind, text: clip(text) });
+  put(draft, "matters", key!, { entries: (matter.entries ?? 0) + 1 });
+}
+
+/** Something new for a matter: it is open, and whether it's done is for a round to say again. */
+function openMatter(draft: Draft, key: string, rule: string, lane: string) {
+  const matter = draft.view.get("matters", key);
+  if (!matter) {
+    const fresh = { key, rule, lane, state: "open", finished: 0, latest: "", entries: 0 };
+    return void put(draft, "matters", key, { ...fresh, opened_at: draft.at, ended_at: null, stall_at: null });
+  }
+  if (matter.state !== "open") {
+    put(draft, "matters", key, { state: "open", finished: 0, ended_at: null, stall_at: null });
+    return logMatter(draft, key, "reopened", "又有新的往来，重新打开");
+  }
+  if (matter.finished || matter.stall_at) put(draft, "matters", key, { finished: 0, stall_at: null });
+}
+
+/**
+ * Whether a matter is over. It ends when the last round said it's done and nothing is left waiting; with nothing waiting
+ * and nothing said, it's set aside a while later (a source may still come back with news, which reopens it either way).
+ */
+function settleMatter(draft: Draft, key: string | null | undefined, finished?: boolean) {
+  let matter = key ? draft.view.get("matters", key) : undefined;
+  if (!matter) return;
+  if (finished !== undefined) matter = put(draft, "matters", key!, { finished: finished ? 1 : 0 });
+  if (matter.state !== "open") return;
+  if (!idle(draft.view, key!)) {
+    if (matter.stall_at) put(draft, "matters", key!, { stall_at: null });
+    return;
+  }
+  if (matter.finished) {
+    put(draft, "matters", key!, { state: "ended", ended_at: draft.at, stall_at: null });
+    return logMatter(draft, key, "ended", "做完了，这件事结束");
+  }
+  if (!matter.stall_at) put(draft, "matters", key!, { stall_at: iso(draft.now + STALL_AFTER) });
+}
+
+/** How an event reads in a matter's record. */
+function eventLine(draft: Draft, event: Row) {
+  const source = draft.rules.sources[event.source]?.name ?? event.source;
+  const what = `${source} ${event.type} ${event.subject ?? ""}`.trim();
+  return event.summary ? `${what}：${event.summary}` : what;
+}
+
+type Note = { matter?: string | null; kind: string; line: string };
+
 /** A queued run of this rule and thread takes the event, so what comes in while it waits is handled together. */
-function enqueue(draft: Draft, rule: Rule, event: number, lane: string, resume?: string | null) {
+function enqueue(draft: Draft, rule: Rule, event: number, lane: string, resume?: string | null, note?: Note) {
   const rulesVersion = draft.view.get("config", "rules")!.version;
   const stamps = { not_before: draft.at, created_at: draft.at, rules_version: rulesVersion };
   const run =
@@ -188,6 +265,11 @@ function enqueue(draft: Draft, rule: Rule, event: number, lane: string, resume?:
     add(draft, "runs", { rule: rule.name, agent: rule.to, grp: rule.group, lane, state: "queued", ...stamps });
   put(draft, "run_events", `${run.id}:${event}`, { run_id: run.id, event_id: event });
   if (resume) put(draft, "runs", run.id, { resume });
+  // What joins a run waiting already is part of that run's matter.
+  const matter: string = run.matter ?? note?.matter ?? matterFor(draft, rule, event, lane);
+  if (!run.matter) put(draft, "runs", run.id, { matter });
+  openMatter(draft, matter, rule.name, lane);
+  logMatter(draft, matter, note?.kind ?? "event", note?.line ?? eventLine(draft, draft.view.get("events", event)!));
   return run.id as number;
 }
 
@@ -268,7 +350,18 @@ function cardFromReceipt(draft: Draft, run: Row, kind: string, card: Row) {
   const key = `thread:${run.rule}:${run.lane}:${name}`;
   // Closed as it's made, nothing open stops it coming again: a run trying again says it once.
   if (fyi && rows(draft.view, "cards", { key, run_id: run.id }, 1).length) return;
-  createCard(draft, { ...card, hops: hopsOf(draft, run), key, kind, fyi, quiet, ...threadOf(run), ...origin });
+  const matter = draft.view.get("runs", run.id)!.matter ?? null;
+  return createCard(draft, {
+    ...card,
+    hops: hopsOf(draft, run),
+    key,
+    kind,
+    fyi,
+    quiet,
+    matter,
+    ...threadOf(run),
+    ...origin,
+  });
 }
 
 /** Notices what has gone quiet: a worker that stopped coming, a run its worker stopped mentioning. */
@@ -350,6 +443,8 @@ function stopRun(draft: Draft, run: Row, why: string, summary: string, words: st
   clearFiredTimers(draft, run);
   closeStopped(draft, run.id, summary);
   notify(draft, `run:${run.id}:${why}`, run.rule, words, threadOf(run));
+  logMatter(draft, run.matter, "stopped", `第 ${run.id} 轮停下了：${summary}`);
+  settleMatter(draft, run.matter);
 }
 
 const ruleGone = (rule: string, what = "排着的这一轮"): [string, string] => [
@@ -391,6 +486,7 @@ function retryLater(draft: Draft, run: Row, result: Result) {
     for (const _ of result[what] ?? []) rejected.push({ what, reason: "没跑成的一轮只能发通知" });
   }
   for (const notice of result.notice ?? []) cardFromReceipt(draft, run, "notice", notice);
+  logMatter(draft, run.matter, "failed", `第 ${run.id} 轮没跑成（第 ${attempts} 次）：${error}`);
   const failure = { attempts, error, ...unclaimed };
   if (!ruleNamed(draft, run.rule)) {
     put(draft, "runs", id, failure);
@@ -442,7 +538,8 @@ function scheduleReview(draft: Draft, run: Row, later: Later) {
   };
   if (existing) return void put(draft, "timers", existing.id, fields);
   const source = sourceOf(draft.view, run.id) ?? SCHEDULE;
-  add(draft, "timers", { ...fields, rule, lane, key: later.key, source, event_id: null, created_at: draft.at });
+  const matter = draft.view.get("runs", run.id)!.matter ?? null;
+  add(draft, "timers", { ...fields, rule, lane, key: later.key, source, matter, event_id: null, created_at: draft.at });
 }
 
 /** A receipt takes effect here, all of it in the one fact. */
@@ -452,24 +549,47 @@ function applyReceipt(draft: Draft, run: Row, result: Result) {
   const summary = result.summary ?? "";
   const rejected: Rejected[] = [];
   put(draft, "runs", id, { state: result.outcome, finished_at: draft.at, summary, error: null, cancel_at: null });
+  const matter: string | null = draft.view.get("runs", id)!.matter ?? null;
+  const said = result.outcome === "nothing" ? `没事可做：${summary}` : summary || "（没写结论）";
+  logMatter(draft, matter, "result", `第 ${id} 轮：${said}${result.finished ? "（说做完了）" : ""}`);
+  if (matter && summary) put(draft, "matters", matter, { latest: clip(summary) });
   closeOpen(draft, (key) => key === `run:${id}:failing`, "后来跑成了");
   closeOpen(draft, (key) => key === `run:${id}:unknown`, "结果回来了");
   const eventIds = eventsOf(draft.view, id).map((event) => event.id);
   for (const card of rows(draft.view, "cards", { answer_event: eventIds, state: "decided" })) {
     put(draft, "cards", card.id, { state: "done", result: summary, closed_at: draft.at, version: card.version + 1 });
   }
+  const touched = new Set<string>();
   for (const item of result.resolve ?? []) {
     const card = openInScope(draft.view, run).find((card) => card.id === item.card);
-    if (card) closeCard(draft, card, item.reason.trim(), `第 ${id} 轮`);
-    else rejected.push({ card: item.card, reason: "不在本轮核对范围" });
+    if (card) {
+      closeCard(draft, card, item.reason.trim(), `第 ${id} 轮`);
+      logMatter(draft, matter, "resolve", `#${card.id}「${card.title}」结案：${item.reason}`);
+      if (card.matter && card.matter !== matter) touched.add(card.matter);
+    } else rejected.push({ card: item.card, reason: "不在本轮核对范围" });
   }
-  for (const ask of result.ask ?? []) cardFromReceipt(draft, run, "ask", ask);
-  for (const notice of result.notice ?? []) cardFromReceipt(draft, run, "notice", notice);
+  for (const ask of result.ask ?? []) {
+    const made = cardFromReceipt(draft, run, "ask", ask);
+    if (made && !made.duplicate)
+      logMatter(draft, matter, "ask", `#${made.card}「${ask.title}」${ask.options.join(" / ")}`);
+  }
+  for (const notice of result.notice ?? []) {
+    const made = cardFromReceipt(draft, run, "notice", notice);
+    if (made && !made.duplicate) logMatter(draft, matter, "notice", `#${made.card}「${notice.title}」`);
+  }
   if (rule?.tell === "always" && result.outcome === "done") {
     const once = { fyi: true, once: true, ...threadOf(run), source: sourceOf(draft.view, id), run: id };
     notify(draft, `run:${id}:done`, run.rule, summary, once);
   }
-  for (const later of result.later ?? []) scheduleReview(draft, run, later);
+  for (const later of result.later ?? []) {
+    scheduleReview(draft, run, later);
+    logMatter(
+      draft,
+      matter,
+      "later",
+      later.cancel ? `取消复查 ${later.key}` : `约复查 ${later.key}（${later.at}）：${later.about}`,
+    );
+  }
   const emitted: number[] = [];
   for (const event of result.events ?? []) {
     if (rule?.emits && typeMatches(rule.emits.types, event.type)) {
@@ -480,8 +600,176 @@ function applyReceipt(draft: Draft, run: Row, result: Result) {
   }
   // The source whose event this run took reads them back (`eventOutcome`); nothing else links them to the run.
   if (emitted.length) put(draft, "runs", id, { emitted: JSON.stringify(emitted) });
+  if (result.memory?.length && !rule?.dreams) {
+    rejected.push({ what: "memory", reason: "只有做梦规则（写了 dreams: true）的回执能写记忆" });
+  }
+  if (rule?.dreams) dream(draft, run, rule, result.memory ?? [], rejected);
   clearFiredTimers(draft, run);
+  // A dream is one go of curating: its round over, so is its matter, said or not.
+  settleMatter(draft, matter, result.finished === true || rule?.dreams === true);
+  for (const other of touched) settleMatter(draft, other);
   return rejected;
+}
+
+/**
+ * A dream's receipt takes effect: a rule's experience is written at once, within its limits; what it says of the owner
+ * only proposes, for the owner to take or leave. Forgetting comes first, so room made in one receipt can be used in it.
+ */
+function dream(draft: Draft, run: Row, rule: Rule, writes: MemoryWrite[], rejected: Rejected[]) {
+  const refused: { key: string; reason: string }[] = [];
+  const refuse = (entry: MemoryWrite, reason: string) => {
+    refused.push({ key: entry.key, reason });
+    rejected.push({ what: "memory", reason: `「${entry.key}」${reason}` });
+  };
+  const known = (name?: string) => draft.rules.rules.some((one) => one.name === name && !one.dreams);
+  let changed = 0;
+  for (const entry of writes.filter((entry) => entry.forget)) {
+    if (entry.scope === "owner") refuse(entry, "：关于本人的只能由本人删改，要改就提一条同名的新提议");
+    else if (!known(entry.rule)) refuse(entry, `：没有规则「${entry.rule}」`);
+    else if (draft.view.get("memory", ruleMemoryKey(entry.rule!, entry.key))) {
+      set(draft, "memory", ruleMemoryKey(entry.rule!, entry.key), null);
+      changed += 1;
+    }
+  }
+  let proposed = 0;
+  for (const entry of writes.filter((entry) => !entry.forget)) {
+    const text = entry.text!.trim();
+    if (entry.scope === "rule") {
+      if (!known(entry.rule)) {
+        refuse(entry, `：没有规则「${entry.rule}」`);
+        continue;
+      }
+      if (chars(text) > LIMITS.rule.entry) {
+        refuse(entry, `：一条最多 ${LIMITS.rule.entry} 字`);
+        continue;
+      }
+      const key = ruleMemoryKey(entry.rule!, entry.key);
+      const others = rows(draft.view, "memory", { scope: "rule", rule: entry.rule! }).filter((row) => row.key !== key);
+      if (others.reduce((total, row) => total + chars(row.text), chars(text)) > LIMITS.rule.total) {
+        refuse(entry, `：规则「${entry.rule}」的记忆最多 ${LIMITS.rule.total} 字，先合并或删掉旧的`);
+        continue;
+      }
+      if (draft.view.get("memory", key)?.text === text) continue;
+      put(draft, "memory", key, {
+        key,
+        scope: "rule",
+        rule: entry.rule,
+        name: entry.key,
+        text,
+        run: run.id,
+        at: draft.at,
+      });
+      changed += 1;
+    } else {
+      if (chars(text) > LIMITS.owner.entry) {
+        refuse(entry, `：关于本人的一条最多 ${LIMITS.owner.entry} 字`);
+        continue;
+      }
+      if (draft.view.get("memory", ownerMemoryKey(entry.key))?.text === text) continue;
+      const key = JSON.stringify(["proposal", draft.seq, proposed++]);
+      put(draft, "memory", key, {
+        key,
+        scope: "proposal",
+        name: entry.key,
+        text,
+        run: run.id,
+        at: draft.at,
+        card_id: null,
+      });
+    }
+  }
+  const before = draft.view.get("memory", LAST_DREAM)?.at ?? null;
+  put(draft, "memory", LAST_DREAM, { key: LAST_DREAM, scope: "meta", at: draft.at, rejected: refused });
+  offerProposals(draft, run, rule, changed, before);
+}
+
+/** The proposals of a card that is gone, answered some other way or left too long, go with it. */
+function lapseProposals(draft: Draft) {
+  const open = draft.view.get("memory", PROPOSALS_OPEN);
+  if (!open) return;
+  for (const proposal of proposals(draft.view).filter((row) => row.card_id === open.card_id)) {
+    set(draft, "memory", proposal.key, null);
+  }
+  set(draft, "memory", PROPOSALS_OPEN, null);
+}
+
+/** One card of proposals at a time: what comes while one is open waits for a dream after it's closed. */
+function offerProposals(draft: Draft, run: Row, rule: Rule, changed: number, since: string | null) {
+  const open = draft.view.get("memory", PROPOSALS_OPEN);
+  if (open && draft.view.get("cards", open.card_id)?.state !== "open") lapseProposals(draft);
+  if (draft.view.get("memory", PROPOSALS_OPEN)) return;
+  const waiting = proposals(draft.view).filter((row) => row.card_id === null);
+  if (!waiting.length) return;
+  const stalled = rows(draft.view, "matters", { state: "stalled" }).filter(
+    (matter) => since === null || matter.ended_at > since,
+  ).length;
+  const aside = [
+    changed ? `这次整理改了 ${changed} 条规则的经验（agent-autoloop memory 查看）` : "",
+    stalled ? `有 ${stalled} 件事空着没做完，先搁置了（agent-autoloop memory 查看）` : "",
+  ].filter(Boolean);
+  const text = [
+    "整理时得出几条关于你的了解。采纳的会在以后开新会话时交给 Agent：",
+    ...waiting.map((row, index) => `${index + 1}. ${row.text}`),
+    "",
+    "回答「全部采纳」或「都不要」，也可以写「采纳 1、3」。7 天不回答就作废。",
+    ...(aside.length ? ["", `顺带：${aside.join("；")}。`] : []),
+  ].join("\n");
+  const card = createCard(draft, {
+    key: `${PROPOSALS_CARD}${draft.seq}`,
+    kind: "ask",
+    title: "要不要记住这些关于你的事？",
+    text: [...text].slice(0, 4000).join(""),
+    options: ["全部采纳", "都不要"],
+    rule: rule.name,
+    lane: "",
+    grp: rule.group,
+    source: SCHEDULE,
+    run: run.id,
+  }).card;
+  waiting.forEach((row, index) => put(draft, "memory", row.key, { card_id: card, n: index + 1 }));
+  const expires = iso(draft.now + PROPOSALS_LAST);
+  put(draft, "memory", PROPOSALS_OPEN, { key: PROPOSALS_OPEN, scope: "meta", card_id: card, expires_at: expires });
+}
+
+/** Which proposals an answer in words takes: the numbers it names, or all or none as it says. */
+function picked(text: string, count: number): number[] {
+  const all = Array.from({ length: count }, (_, index) => index + 1);
+  const named = [...text.matchAll(/\d+/g)].map((match) => Number(match[0])).filter((n) => n >= 1 && n <= count);
+  if (named.length) return [...new Set(named)];
+  if (/不要|不采纳|拒绝|都不/.test(text)) return [];
+  if (/全部|都要|采纳|同意|好/.test(text)) return all;
+  return [];
+}
+
+/** The owner's answer to proposals about them: what they take is remembered, within its limit; the rest is dropped. */
+function answerProposals(draft: Draft, card: Row, given: Row, text: string | null) {
+  const linked = proposals(draft.view)
+    .filter((row) => row.card_id === card.id)
+    .sort((a, b) => a.n - b.n);
+  const chosen =
+    given.choice === 0 ? linked.map((row) => row.n) : given.choice === 1 ? [] : picked(text ?? "", linked.length);
+  let kept = 0;
+  let over = 0;
+  for (const row of linked.filter((row) => chosen.includes(row.n))) {
+    const key = ownerMemoryKey(row.name);
+    const others = rows(draft.view, "memory", { scope: "owner" }).filter((one) => one.key !== key);
+    if (others.reduce((total, one) => total + chars(one.text), chars(row.text)) > LIMITS.owner.total) {
+      over += 1;
+      continue;
+    }
+    put(draft, "memory", key, { key, scope: "owner", name: row.name, text: row.text, run: row.run, at: draft.at });
+    kept += 1;
+  }
+  for (const row of linked) set(draft, "memory", row.key, null);
+  if (draft.view.get("memory", PROPOSALS_OPEN)?.card_id === card.id) set(draft, "memory", PROPOSALS_OPEN, null);
+  const result = kept
+    ? `记住了 ${kept} 条${over ? `，${over} 条超过 ${LIMITS.owner.total} 字的上限没记` : ""}`
+    : over
+      ? `都超过 ${LIMITS.owner.total} 字的上限，没记`
+      : "都没记";
+  const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
+  put(draft, "cards", card.id, { state: "done", ...decision, result, closed_at: draft.at, version: card.version + 1 });
+  return { changed: true, state: "done", result };
 }
 
 function finish(draft: Draft, id: number, token: string, given: unknown) {
@@ -510,6 +798,8 @@ function finish(draft: Draft, id: number, token: string, given: unknown) {
     });
     clearFiredTimers(draft, run);
     closeStopped(draft, id, "已停止");
+    logMatter(draft, run.matter, "stopped", `第 ${id} 轮停下了`);
+    settleMatter(draft, run.matter);
   } else if (result.outcome === "failed") rejected = retryLater(draft, run, result);
   else rejected = applyReceipt(draft, run, result);
   put(draft, "runs", id, { last_answer: JSON.stringify(rejected) });
@@ -538,18 +828,28 @@ function answer(draft: Draft, id: number, given: Row) {
   if (text !== null && [...text].length > ANSWER_TEXT) throw new InputError(`${words}最多 ${ANSWER_TEXT} 字`);
   if (card.kind === "notice") {
     closeCard(draft, card, "已处理", given.by ?? null, text);
+    logMatter(draft, card.matter, "answer", `#${id}「${card.title}」你处理了${text ? `：${text}` : ""}`);
+    settleMatter(draft, card.matter);
     return { changed: true, state: "closed" };
   }
   const optionCount = JSON.parse(card.options).length;
   const inRange = Number.isInteger(given.choice) && given.choice >= 0 && given.choice < optionCount;
   if (given.choice === undefined ? !text : !inRange) throw new InputError("没有这个选项");
+  if (card.key?.startsWith(PROPOSALS_CARD)) return answerProposals(draft, card, given, text);
   const rule = card.rule ? ruleNamed(draft, card.rule) : undefined;
   const { lane: subject, title: summary, hops = 0 } = card;
   const event = { id: `card:${id}`, type: "card.answered", subject, summary, hops };
   const eventId = recordEvent(draft, card.source ?? SCHEDULE, event, rule ? [rule.name] : []);
   const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
   put(draft, "cards", id, { state: "decided", ...decision, answer_event: eventId, version: card.version + 1 });
-  if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
+  const chosen = given.choice === undefined ? `你回答：${text}` : `你选了：${JSON.parse(card.options)[given.choice]}`;
+  const line = `#${id}「${card.title}」${chosen}${given.choice !== undefined && text ? `（${text}）` : ""}`;
+  const note = { matter: card.matter ?? null, kind: "answer", line };
+  if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null, note);
+  else {
+    logMatter(draft, card.matter, "answer", line);
+    settleMatter(draft, card.matter);
+  }
   return { changed: true, state: "decided" };
 }
 
@@ -604,7 +904,8 @@ function tick(draft: Draft) {
     }
     const key = `${rule.name}@${slot}`;
     if (!rows(draft.view, "events", { source: SCHEDULE, key }).length) {
-      enqueue(draft, rule, recordEvent(draft, SCHEDULE, { id: key, type: "schedule.tick" }, [rule.name]), "");
+      const event = recordEvent(draft, SCHEDULE, { id: key, type: "schedule.tick" }, [rule.name]);
+      enqueue(draft, rule, event, "", undefined, { kind: "schedule", line: `定时到了（${slot}）` });
     }
     put(draft, "schedules", rule.name, { next_at: nextAt() });
   }
@@ -615,12 +916,29 @@ function tick(draft: Draft) {
     const eventId = recordEvent(draft, timer.source, event, rule ? [rule.name] : []);
     if (rule) {
       put(draft, "timers", timer.id, { event_id: eventId });
-      enqueue(draft, rule, eventId, timer.lane, timer.agent === rule.to ? timer.session : null);
+      const note = { matter: timer.matter ?? null, kind: "timer", line: `约好的复查到了：${timer.about}` };
+      enqueue(draft, rule, eventId, timer.lane, timer.agent === rule.to ? timer.session : null, note);
     } else {
       const [, words] = ruleGone(timer.rule, `到期的复查「${opening(timer.about)}」`);
       notify(draft, `timer:${timer.id}:rule-gone`, timer.rule, words, { rule: timer.rule, lane: timer.lane });
       set(draft, "timers", timer.id, null);
+      settleMatter(draft, timer.matter);
     }
+  }
+  for (const matter of rows(draft.view, "matters", { state: "open", stall_at: { not: null } })) {
+    if (Date.parse(matter.stall_at) > now) continue;
+    if (!idle(draft.view, matter.key)) {
+      put(draft, "matters", matter.key, { stall_at: null });
+      continue;
+    }
+    put(draft, "matters", matter.key, { state: "stalled", ended_at: draft.at, stall_at: null });
+    logMatter(draft, matter.key, "stalled", "空了 20 分钟，也没说做完，先搁置；再有往来就重新打开");
+  }
+  const proposalsOpen = draft.view.get("memory", PROPOSALS_OPEN);
+  if (proposalsOpen && Date.parse(proposalsOpen.expires_at) <= now) {
+    const card = draft.view.get("cards", proposalsOpen.card_id);
+    if (card?.state === "open") closeCard(draft, card, "7 天没回答，这些提议作废了");
+    lapseProposals(draft);
   }
   sweep(draft);
 }
@@ -697,7 +1015,8 @@ const CONTROL = {
     for (const id of [...events].sort((a, b) => a - b)) {
       const event = draft.view.get("events", id);
       if (!event || !JSON.parse(event.paused ?? "[]").includes(name) || taken(id)) continue;
-      runs.add(enqueue(draft, rule, id, rule.parallel ? event.subject : ""));
+      const line = `补跑暂停时跳过的事件：${eventLine(draft, event)}`;
+      runs.add(enqueue(draft, rule, id, rule.parallel ? event.subject : "", undefined, { kind: "replay", line }));
       replayed.push(id);
     }
     return { events: replayed, runs: [...runs] };
@@ -720,7 +1039,8 @@ const CONTROL = {
       detail: reason,
     });
     const eventId = recordEvent(draft, source, event, [name]);
-    const run = enqueue(draft, rule, eventId, rule.parallel ? subject : "");
+    const line = `${by} 手动运行${reason.trim() ? `：${reason.trim()}` : ""}`;
+    const run = enqueue(draft, rule, eventId, rule.parallel ? subject : "", undefined, { kind: "manual", line });
     // Waiting out a retry's backoff wouldn't be now: the owner asking is the go-ahead.
     put(draft, "runs", run, { manual: 1, not_before: draft.at });
     return { event: eventId, run };
@@ -801,6 +1121,8 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
       put(draft, "runs", id, { state: "cancelled", finished_at: draft.at });
       clearFiredTimers(draft, run);
       closeStopped(draft, id, "已停止");
+      logMatter(draft, run.matter, "stopped", `第 ${id} 轮你停掉了`);
+      settleMatter(draft, run.matter);
     } else if (run.state === "claimed") put(draft, "runs", id, { cancel_at: draft.at });
     else throw new InputError("这一轮已经结束了");
   },
@@ -809,7 +1131,17 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
     if (!card) throw new NotFound("没有这张卡片");
     if (card.state !== "open") return false;
     closeCard(draft, card, reason, by);
+    logMatter(draft, card.matter, "resolve", `#${id}「${card.title}」你结案：${reason}`);
+    settleMatter(draft, card.matter);
     return true;
+  },
+  /** The owner takes something out of what the hub remembers. The log keeps that it was there. */
+  forgetMemory(draft, scope, rule, name) {
+    const key = scope === "owner" ? ownerMemoryKey(name) : scope === "rule" ? ruleMemoryKey(rule, name) : null;
+    if (key === null) throw new InputError("scope 只能是 rule 或 owner");
+    if (!draft.view.get("memory", key)) return { changed: false };
+    set(draft, "memory", key, null);
+    return { changed: true };
   },
   answer,
   nextCard,

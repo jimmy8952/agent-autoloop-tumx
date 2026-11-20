@@ -398,7 +398,8 @@ test("a worker heartbeat closes its offline card with no later scheduled work", 
   act("heartbeat", ["w1", []], 610000);
   assert.equal(rows(v, "cards").filter((c) => c.state === "open").length, 0);
   const job = act("claimNext", ["w1", "back"], 610000);
-  act("finish", [job.run, job.token, { outcome: "done" }], 610001);
+  // Said to be done, the matter ends: a matter left open would be set aside 20 minutes on, which is work to come.
+  act("finish", [job.run, job.token, { outcome: "done", finished: true }], 610001);
   assert.deepEqual(rows(v, "due"), []);
 });
 

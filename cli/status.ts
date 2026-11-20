@@ -294,6 +294,13 @@ export function render(state: any, { color, columns }: { color: boolean; columns
     say(`  ${pad(line.name, ruleRoom)}  ${pad(line.every, everyRoom)}  ${dim("下次")} ${when(line.next)}${dim(where)}`);
   }
 
+  const stalled = state.stalled ?? [];
+  if (stalled.length) section(`${heading("搁置的事")}${dim("（空着、没说做完；再有往来会重新打开）")}`);
+  for (const matter of stalled.slice(0, 5)) {
+    const where = matter.lane ? `${matter.rule} ${matter.lane}` : matter.rule;
+    say(`  ${where}  ${dim(when(matter.at))}${matter.latest ? dim(`：${matter.latest}`) : ""}`);
+  }
+
   const unrouted = state.unrouted.slice(0, 5);
   if (unrouted.length) section(heading("没有规则接的事件"));
   for (const event of unrouted) {

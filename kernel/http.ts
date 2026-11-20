@@ -3,6 +3,7 @@ import { cardPage, PAGE_HEADERS, wordsPage } from "./card-page.ts";
 import { whose, type Environment } from "./credentials.ts";
 import { AuthError, Conflict, InputError, NotFound } from "./errors.ts";
 import { iso, type Row, type View } from "./evolve.ts";
+import { memoryView } from "./memory.ts";
 import { agentsOf, cancels, cardView, configuration, eventOutcome } from "./query.ts";
 import { eventRule, ruleOf } from "./rules.ts";
 import { isAsk } from "../protocol/validate.ts";
@@ -267,6 +268,20 @@ function state(call: Call) {
   return json(call.services.state(call.now, before === null ? undefined : Number(before)));
 }
 
+/** The owner takes an entry out of what the hub remembers: a rule's experience, or what it knows of them. */
+async function forget(call: Call) {
+  requireKey(call, "owner");
+  const given = await readJson(call.request);
+  if (!given || typeof given !== "object" || Array.isArray(given)) throw new InputError("要是一个 JSON 对象");
+  const { scope, rule, key, ...rest } = given as Row;
+  if (Object.keys(rest).length) throw new InputError(`不认识的字段：${Object.keys(rest).join("、")}`);
+  if (scope !== "rule" && scope !== "owner") throw new InputError("scope 只能是 rule 或 owner");
+  if (typeof key !== "string" || !key.trim()) throw new InputError("要写 key：忘掉哪一条");
+  if (scope === "rule" && (typeof rule !== "string" || !rule.trim())) throw new InputError("要写 rule：哪条规则的");
+  if (scope === "owner" && rule !== undefined) throw new InputError("关于本人的不属于哪条规则，不写 rule");
+  return json(act(call, "forgetMemory", scope, rule ?? null, key));
+}
+
 function stream(call: Call) {
   const { request, services, token } = call;
   requireKey(call, "owner");
@@ -327,6 +342,14 @@ async function route(call: Call): Promise<Response> {
   const ruleControl = /^\/v1\/rules\/([^/]+)\/(pause|resume|run|replay)$/.exec(path);
   if (method === "POST" && ruleControl) return control(call, ruleControl[1], ruleControl[2]);
   if (method === "GET" && path === "/v1/state") return state(call);
+  if (method === "GET" && path === "/v1/memory") {
+    requireKey(call, "owner");
+    const rule = call.url.searchParams.get("rule") ?? undefined;
+    if (rule !== undefined && !call.rules.rules.some((one) => one.name === rule))
+      throw new NotFound(`没有这条规则：${rule}`);
+    return json(memoryView(call.view, call.rules, rule));
+  }
+  if (method === "POST" && path === "/v1/memory/forget") return forget(call);
   if (method === "GET" && path === "/v1/stream") return stream(call);
   return json({ error: "没有这个地址" }, 404);
 }

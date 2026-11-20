@@ -20,6 +20,9 @@ export function replay(log: Fact[]): Snapshot {
       "config",
       "due",
       "pauses",
+      "matters",
+      "matter_log",
+      "memory",
     ].map((t) => [t, {}]),
   ) as Snapshot["tables"];
   const next: Record<string, number> = {};
@@ -77,6 +80,14 @@ export function invariants(current: View, log: Fact[], before?: Snapshot) {
           "回答没叫醒原事项",
         );
     }
+  for (const r of runs) if (r.matter) assert.ok(view.tables.matters[r.matter], "轮次的事项记忆不见了");
+  for (const matter of rows(view, "matters").filter((m) => m.state !== "open")) {
+    const waiting =
+      runs.some((r) => r.matter === matter.key && ["queued", "claimed", "unknown"].includes(r.state)) ||
+      cards.some((c) => c.matter === matter.key && c.state === "open") ||
+      rows(view, "timers").some((t) => t.matter === matter.key && t.event_id === null);
+    assert.ok(!waiting, "事项还有等着的事，却已经结束或搁置了");
+  }
   if (before) {
     for (const e of rows(before, "events")) assert.deepEqual(view.tables.events[e.id], e, "已落盘事件被改了或丢了");
     for (const c of rows(before, "cards"))

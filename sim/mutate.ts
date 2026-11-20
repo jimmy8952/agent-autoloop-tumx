@@ -53,6 +53,25 @@ const edits: [string, string, string, string][] = [
   ["stale-commit", "store.ts", "if (latest !== view.seq)", "if (false)"],
   ["log-append", "store.ts", "for (const fact of facts) insert.run", "for (const fact of []) insert.run"],
   ["transaction-removed", "store.ts", "return transaction(db, () => {", "return ((work) => work())(() => {"],
+  ["matter-waiting", "decide.ts", "if (!idle(draft.view, key!)) {", "if (false) {"],
+  ["matter-said-done", "decide.ts", "if (matter.finished) {", "if (true) {"],
+  [
+    "matter-news-reopens",
+    "decide.ts",
+    'if (matter.state !== "open") {\n    put(draft, "matters"',
+    'if (false) {\n    put(draft, "matters"',
+  ],
+  ["stall-deadline", "due.ts", 'add("stall", matter.key, Date.parse(matter.stall_at));', ""],
+  ["dream-only", "decide.ts", "if (result.memory?.length && !rule?.dreams) {", "if (false) {"],
+  ["rule-memory-limit", "decide.ts", "> LIMITS.rule.total) {", "> Infinity) {"],
+  [
+    "owner-proposes",
+    "decide.ts",
+    'scope: "proposal",\n        name: entry.key,',
+    'scope: "owner",\n        name: entry.key,',
+  ],
+  ["owner-memory-limit", "decide.ts", "> LIMITS.owner.total) {", "> Infinity) {"],
+  ["proposals-one-card", "decide.ts", 'if (draft.view.get("memory", PROPOSALS_OPEN)) return;', ""],
 ];
 const tests = [
   "kernel",
@@ -65,6 +84,7 @@ const tests = [
   "queue-costs",
   "http",
   "resume-thread",
+  "memory",
 ].map((n) => `tests/${n}.test.ts`);
 export function mutate() {
   const root = join(import.meta.dirname, "..");

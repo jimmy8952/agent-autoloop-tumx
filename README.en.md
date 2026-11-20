@@ -125,7 +125,17 @@ Order checked. We have enough stock in the warehouse.
 ```
 ````
 
-Besides `ask`, receipts can send notifications (`notice`), resolve open cards (`resolve`), schedule follow-up checks (`later`), and emit new events (`events`). A notice asks for nothing, but you can add a line of your own when you settle one, and it stays on the card; one marked `fyi` is only there to tell you, and has no button. If the JSON is invalid, the hub has the agent rewrite just that final message in the same session, without repeating completed work. If rewriting also fails, it keeps the original conclusion and tells you the receipt was not applied (a plain command has no session, so it goes straight to this). Going on in an old session works the same way: a new session starts only when the old one can't be continued. If it was continued and then broke partway, the run counts as failed and is retried in that session a few minutes later, not redone in a new one. A new event on the same thread starts a new session by default; with `"resume": true` in the rule it goes on in the last round's session.
+Besides `ask`, receipts can send notifications (`notice`), resolve open cards (`resolve`), schedule follow-up checks (`later`), emit new events (`events`), and say the matter is done for good (`"finished": true`; `done` only ends the round). A notice asks for nothing, but you can add a line of your own when you settle one, and it stays on the card; one marked `fyi` is only there to tell you, and has no button. If the JSON is invalid, the hub has the agent rewrite just that final message in the same session, without repeating completed work. If rewriting also fails, it keeps the original conclusion and tells you the receipt was not applied (a plain command has no session, so it goes straight to this). Going on in an old session works the same way: a new session starts only when the old one can't be continued. If it was continued and then broke partway, the run counts as failed and is retried in that session a few minutes later, not redone in a new one. A new event on the same thread starts a new session by default; with `"resume": true` in the rule it goes on in the last round's session.
+
+### What the hub remembers
+
+The hub remembers only **what went through the hub**. An agent's own memory (CLAUDE.md, its memory, your hooks) stays the agent's business.
+
+- **Each matter's dealings**: the events, what you were asked, how you answered, and each round's conclusion are recorded automatically; the agent writes nothing. When a matter isn't finished but a new session starts (no `resume`, the old session can't be resumed, the agent changed…), the new session is handed them once; a round going on in its conversation isn't handed them again. A matter ends when a round says `"finished": true` and nothing is left waiting (`done` only ends the round). One left with nothing waiting and nothing said is set aside after 20 minutes, and reopens with the next event. Each run of a scheduled rule is a matter of its own.
+- **Each rule's experience** and **what it knows about you**: a rule with `dreams: true` "dreams" every night and distills them from finished matters. A rule's experience is kept at once (about 1,000 tokens per rule); what it learns about you is only proposed on a card for you to confirm (about 500 tokens), and lapses after 7 days.
+- **Your standing directions**: `instructions` in `rules.json`, written only by you, handed to each new session once.
+
+`agent-autoloop memory` shows what's remembered; `agent-autoloop forget <rule> <key>` removes an entry. See the protocol's "中台记忆" section and the [dreaming recipe](examples/recipes/dream/README.md).
 
 ## Ready-to-use recipes
 
@@ -140,6 +150,7 @@ Each recipe includes sample rules and setup instructions (written in Chinese).
 | [Website watch](examples/recipes/website-watch/README.md) | Check status and expected content every five minutes; wake the agent on a new incident, keep ongoing failures quiet, and update the card on recovery |
 | [Feishu weekly and business brief](examples/recipes/feishu-brief/README.md) | Read selected reports and tables with your permissions at 6 PM Sunday; summarize locally and send only a short summary to Feishu |
 | [Inbox triage](examples/recipes/inbox-triage/README.md) | Read unread mail from the last 24 hours at 8 AM by default; write a local checklist with reply drafts, without sending or changing the mailbox |
+| [Dreaming: curate the hub's memory](examples/recipes/dream/README.md) | Every night, distill each rule's experience from finished and set-aside matters, and propose what it learned about you on a card for you to confirm; read-only |
 | [PR delivery](skills/agent-autoloop/SKILL.md#交付流水线) | Add `deliver` to a PR to review it, wait for CI, merge, wait for deployment, and verify the live version |
 
 **To enable one:** open its instructions. If the recipe includes a task Skill, put it in your agent's skills directory. Merge the sample rules into `~/.agent-autoloop/rules.json`, replace worker names and paths, then run `agent-autoloop check`.
@@ -241,6 +252,7 @@ For automated workloads, providers generally recommend using API keys rather tha
 - [Configuration & delivery pipeline manual](skills/agent-autoloop/SKILL.md)
 - [Writing plugins](docs/plugins.md)
 - [Full HTTP protocol specification](docs/protocol.md)
+- [Analysis against "Building always-on agents" and the design of the hub's memory (Chinese)](docs/always-on-agents-对照分析.md)
 - [Security boundaries](SECURITY.md)
 - [Contributing and community](CONTRIBUTING.md)
 - [Development guidelines](AGENTS.md)

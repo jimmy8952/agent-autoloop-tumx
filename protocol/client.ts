@@ -63,6 +63,11 @@ export function hubClient(url: string, key: string) {
       call("POST", `/v1/rules/${encodeURIComponent(rule)}/run`, { body }),
     replay: (rule: string, body: { since: string }) =>
       call("POST", `/v1/rules/${encodeURIComponent(rule)}/replay`, { body }),
+    // What the hub remembers: the owner looks, and takes out what shouldn't stay.
+    memory: (rule?: string) =>
+      call("GET", rule === undefined ? "/v1/memory" : `/v1/memory?${new URLSearchParams({ rule })}`),
+    forget: (body: { scope: "rule" | "owner"; rule?: string; key: string }) =>
+      call("POST", "/v1/memory/forget", { body }),
   };
 }
 export type Hub = ReturnType<typeof hubClient>;

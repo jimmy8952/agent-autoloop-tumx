@@ -66,10 +66,11 @@ const script = join(home, "agent.sh");
 writeFileSync(
   script,
   `#!/bin/sh
-# Asks on its first go; with an answer in the context file, finishes. Asked to, it only says something.
-if grep -q 'card.answered' "$AGENT_AUTOLOOP_CONTEXT"; then
+# Asks on its first go; with an answer in this round's events, finishes. Asked to, it only says something. The events are
+# matched by type: the hub's memory of the matter, in the same file, mentions earlier ones too.
+if grep -q '"type": "card.answered"' "$AGENT_AUTOLOOP_CONTEXT"; then
   echo "你选了绿色，做完了"
-elif grep -q 'hello.notice' "$AGENT_AUTOLOOP_CONTEXT"; then
+elif grep -q '"type": "hello.notice"' "$AGENT_AUTOLOOP_CONTEXT"; then
   cat <<'END'
 说了一声
 

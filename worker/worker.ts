@@ -26,7 +26,7 @@ import { commandLine, processCommand } from "../host/command.ts";
 import type { Job } from "../protocol/job.ts";
 import { addUsage, type Notice, type Result } from "../protocol/validate.ts";
 import { adapterFor, type Adapter, type Reading, type Turn, type Usage } from "./agents.ts";
-import { promptFor, readMessage, repairPrompt, resultFrom } from "./contract.ts";
+import { contextFor, promptFor, readMessage, repairPrompt, resultFrom } from "./contract.ts";
 import { loadUsage, saveUsage, usageDelta } from "./usage.ts";
 
 const RUNS = path.join(HOME, "worker", "runs");
@@ -306,6 +306,12 @@ export function createWorker({
     log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${child.pid}`);
   }
 
+  /** The run's data for the agent, with what the hub remembers if this turn starts a new session. */
+  function writeContext(entry: Entry) {
+    const context = contextFor(entry.job, entry.resume === null);
+    writeFileSync(path.join(entry.dir, "context.json"), JSON.stringify(context, null, 2), { mode: 0o600 });
+  }
+
   function endWith(entry: Entry, result: Result) {
     entry.result = result;
     save(entry);
@@ -330,9 +336,9 @@ export function createWorker({
     // Kept before anything slow: a worker stopped from here on still has the job.
     save(entry);
     try {
-      writeFileSync(path.join(dir, "context.json"), JSON.stringify(job.context, null, 2), { mode: 0o600 });
+      writeContext(entry);
       const adapter = await adapterFor(job.agent.use);
-      entry.prompt = promptFor(job, path.join(dir, "context.json"));
+      entry.prompt = promptFor(job, path.join(dir, "context.json"), entry.resume === null);
       save(entry);
       launch(entry, adapter, entry.prompt);
     } catch (error) {
@@ -395,6 +401,9 @@ export function createWorker({
         entry.resume = null;
         entry.session = randomUUID();
         try {
+          // A new session hasn't seen what the hub remembers of this matter: it's given it now.
+          writeContext(entry);
+          entry.prompt = promptFor(entry.job, path.join(entry.dir, "context.json"), true);
           launch(entry, adapter, entry.prompt);
           return;
         } catch (failure) {
@@ -432,11 +441,10 @@ export function createWorker({
     }
     if (entry.turn === 0) {
       // The worker stopped while starting it, before anything was launched.
-      if (!entry.prompt) entry.prompt = promptFor(entry.job, path.join(entry.dir, "context.json"));
+      const fresh = entry.resume === null;
+      if (!entry.prompt) entry.prompt = promptFor(entry.job, path.join(entry.dir, "context.json"), fresh);
       try {
-        writeFileSync(path.join(entry.dir, "context.json"), JSON.stringify(entry.job.context, null, 2), {
-          mode: 0o600,
-        });
+        writeContext(entry);
         return launch(entry, adapter, entry.prompt);
       } catch (error) {
         return endWith(entry, { outcome: "failed", error: String((error as Error).message ?? error).slice(0, 500) });
